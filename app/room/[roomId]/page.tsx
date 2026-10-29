@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useMemo, useCallback } from "react"
 import { useUsername } from "@/hooks/use-username"
+import { AVATAR_TONES } from "@/lib/user-colors"
 import { useSound } from "@/hooks/use-sound"
 import { client } from "@/lib/client"
 import { useRealtime } from "@/lib/realtime-client"
@@ -16,6 +17,7 @@ import { ConnectionNotification } from "@/components/connection-notification"
 import { JoinRoomScreen } from "@/components/join-room-screen"
 import { Spinner } from "@/components/ui/spinner"
 import { toastSuccess } from "@/lib/toast"
+import { SelectNameAvator } from "@/components/select-name-avator"
 import type { Message } from "@/lib/schemas"
 
 const JOINED_STORAGE_KEY = (roomId: string) => `joined_${roomId}`
@@ -31,6 +33,9 @@ const Page = () => {
   const [connectionNotification, setConnectionNotification] = useState<{ username: string; action: "joined" | "left" } | null>(null)
   const [hasJoined, setHasJoined] = useState<boolean>(false)
   const [joinedUsername, setJoinedUsername] = useState<string>(username)
+  const [showSelectDialog, setShowSelectDialog] = useState(true)
+  const [selectedName, setSelectedName] = useState("")
+  const [selectedAvatarIndex, setSelectedAvatarIndex] = useState(0)
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | undefined>(undefined)
   const typingDebounceRef = useRef<NodeJS.Timeout | undefined>(undefined)
   const autoCopiedRef = useRef(false)
@@ -204,6 +209,27 @@ const Page = () => {
     enabled: hasJoined,
   })
 
+  // On first mount, check for room-specific prior selection and show dialog
+  useEffect(() => {
+    const storedName = localStorage.getItem("selected_name_" + roomId)
+    const storedAvatar = localStorage.getItem("selected_avatar_" + roomId)
+    
+    if (storedName && storedAvatar) {
+      // Have prior selection — auto-join with stored data
+      const name = storedName
+      const avatarIdx = parseInt(storedAvatar)
+      try { localStorage.setItem("chat_username", name) } catch {}
+      setSelectedName(name)
+      setSelectedAvatarIndex(avatarIdx)
+      setHasJoined(true)
+      setJoinedUsername(name)
+    } else {
+      // No prior selection — show the name/avatar dialog on next render
+      setShowSelectDialog(true)
+    }
+  }, [roomId])
+
+  // Restore session from storage (existing behavior, run after prior check)
   useEffect(() => {
     if (typeof window !== "undefined") {
       const joined = localStorage.getItem(JOINED_STORAGE_KEY(roomId)) === "true"
@@ -255,11 +281,14 @@ const Page = () => {
     }
   }, [cleanupRoom])
 
+  // Join room after name/avatar selection
   useEffect(() => {
-    if (!hasJoined && username && roomId) {
+    if (!showSelectDialog && !hasJoined && selectedName && roomId) {
+      setJoinedUsername(selectedName)
+      setHasJoined(true)
       joinRoom()
     }
-  }, [hasJoined, username, roomId, joinRoom])
+  }, [showSelectDialog, hasJoined, selectedName, roomId, joinRoom])
 
   // Copy the invite once on entry so the link is ready to paste. Browsers can
   // reject clipboard access without a direct gesture, so this stays silent.
