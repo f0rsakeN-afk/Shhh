@@ -479,11 +479,17 @@ const Page = () => {
 
       <div className="flex flex-1 flex-col items-center overflow-hidden">
         <div className="border-line flex h-full w-full max-w-5xl flex-col md:border-x">
-          {otherUser && (
+          {presenceData?.users && (
             <div className="shrink-0 border-b border-line bg-card/30 px-3 py-2.5 sm:px-6">
               <PresenceIndicator
-                username={otherUser.username}
-                status={otherUser.status}
+                username={joinedUsername}
+                status="online"
+                participants={presenceData.users.map((u) => (
+                  {
+                    username: u.username,
+                    status: u.status,
+                  }
+                ))}
               />
             </div>
           )}
