@@ -27,3 +27,7 @@ export function toastSuccess(input: ToastInput) {
 export function toastError(input: ToastInput) {
   return showToast("error", input)
 }
+
+export function toastWarning(input: ToastInput) {
+  return showToast("warning", input)
+}

@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { ArrowLeft, Ghost } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
+import { CreateRoomButton } from "@/components/create-room-button";
+import { JoinRoomProvider } from "@/components/join-room";
 
 export default function NotFound() {
   return (
-    <>
+    <JoinRoomProvider>
       <SiteHeader />
       <main
         id="main-content"
@@ -37,16 +39,13 @@ export default function NotFound() {
                 <ArrowLeft className="size-4" aria-hidden="true" />
                 Back home
               </Link>
-              <Link
-                href="/create"
-                className="inline-flex min-h-11 items-center justify-center rounded-md border border-line bg-background px-5 text-sm font-medium text-foreground shadow-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-              >
+              <CreateRoomButton className="inline-flex min-h-11 items-center justify-center rounded-md border border-line bg-background px-5 text-sm font-medium text-foreground shadow-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-60">
                 Create a room
-              </Link>
+              </CreateRoomButton>
             </div>
           </div>
         </section>
       </main>
-    </>
+    </JoinRoomProvider>
   );
 }

@@ -118,7 +118,7 @@ const Page = () => {
     onSuccess: () => {
       cleanupRoom()
       playBombSound()
-      router.push("/create/?destroyed=true")
+      router.push("/?room=expired")
     },
   })
 
@@ -334,7 +334,7 @@ const Page = () => {
       if (event === "chat.destroy") {
         cleanupRoom()
         playBombSound()
-        router.push("/create/?destroyed=true")
+        router.push("/?room=expired")
       }
 
       if (event === "chat.reaction") {
@@ -398,7 +398,7 @@ const Page = () => {
   const handleExpire = useCallback(() => {
     cleanupRoom()
     playBombSound()
-    router.push("/create/?destroyed=true")
+    router.push("/?room=expired")
   }, [cleanupRoom, playBombSound, router])
 
   const handleReaction = useCallback(

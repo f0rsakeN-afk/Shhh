@@ -58,7 +58,7 @@ export function CountdownTimer({
   return (
     <span
       className={cn(
-        "inline-flex h-8 min-w-[4.75rem] shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 font-mono text-xs tabular-nums transition-colors duration-300",
+        "flex h-8 min-w-[4.75rem] shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 font-mono text-xs tabular-nums transition-colors duration-150",
         isCritical
           ? "border-destructive/30 bg-destructive/[0.08] text-destructive-foreground"
           : isWarning

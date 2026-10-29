@@ -1,4 +1,7 @@
+"use client"
+
 import Link from "next/link"
+import { useEffect } from "react"
 import {
   ArrowRight,
   CheckCheck,
@@ -10,8 +13,11 @@ import {
   TimerReset,
 } from "lucide-react"
 import { SiteHeader } from "@/components/site-header"
+import { CreateRoomButton } from "@/components/create-room-button"
+import { JoinRoomProvider, useJoinRoom } from "@/components/join-room"
 import { StripeDivider } from "@/components/stripe-divider"
 import { AmbientBackdrop } from "@/components/ambient-backdrop"
+import { toastWarning } from "@/lib/toast"
 
 const features = [
   {
@@ -38,6 +44,48 @@ const secondaryLink =
   "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-line bg-background/60 px-5 text-sm font-medium text-foreground shadow-xs transition-colors duration-150 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
 
 export function HeroLanding() {
+  return (
+    <JoinRoomProvider>
+      <HeroBody />
+    </JoinRoomProvider>
+  )
+}
+
+function HeroBody() {
+  const join = useJoinRoom()
+
+  // Redirects from an expired, missing, or full room land here with a query
+  // flag. Acknowledge it once so the return to the landing page is not
+  // confusing, then clear the flag from the URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const expired = params.get("room") === "expired"
+    const notFound = params.get("error") === "room-not-found"
+    const full = params.get("error") === "room-full"
+
+    if (expired || notFound || full) {
+      void toastWarning(
+        expired
+          ? {
+              title: "Room expired",
+              description:
+                "That room's timer ran out, so it and its messages are gone.",
+            }
+          : notFound
+            ? {
+                title: "Room not found",
+                description:
+                  "That room doesn't exist anymore, or the link is wrong.",
+              }
+            : {
+                title: "Room is full",
+                description: "That room already has ten people in it.",
+              },
+      )
+      window.history.replaceState({}, "", window.location.pathname)
+    }
+  }, [])
+
   return (
     <>
       <SiteHeader />
@@ -70,14 +118,18 @@ export function HeroLanding() {
               </p>
 
               <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
-                <Link href="/create" className={primaryLink}>
+                <CreateRoomButton className={primaryLink}>
                   Create a room
                   <ArrowRight className="size-4" strokeWidth={1.8} aria-hidden="true" />
-                </Link>
-                <Link href="/join" className={secondaryLink}>
+                </CreateRoomButton>
+                <button
+                  type="button"
+                  onClick={join?.openJoin}
+                  className={secondaryLink}
+                >
                   <KeyRound className="size-4" strokeWidth={1.8} aria-hidden="true" />
                   Join with a code
-                </Link>
+                </button>
               </div>
 
               <p className="mt-4 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -165,10 +217,10 @@ export function HeroLanding() {
               No dashboards, no invites to manage, no settings to worry about.
               The room forgets everyone the same way.
             </p>
-            <Link href="/create" className={secondaryLink}>
+            <CreateRoomButton className={secondaryLink}>
               Start a room
               <ArrowRight className="size-4" strokeWidth={1.8} aria-hidden="true" />
-            </Link>
+            </CreateRoomButton>
           </div>
         </section>
 
@@ -201,13 +253,17 @@ export function HeroLanding() {
             </p>
 
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Link href="/create" className={primaryLink}>
+              <CreateRoomButton className={primaryLink}>
                 Create a room
                 <ArrowRight className="size-4" strokeWidth={1.8} aria-hidden="true" />
-              </Link>
-              <Link href="/join" className={secondaryLink}>
+              </CreateRoomButton>
+              <button
+                type="button"
+                onClick={join?.openJoin}
+                className={secondaryLink}
+              >
                 I have a code
-              </Link>
+              </button>
             </div>
 
             <ul className="mt-7 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
@@ -240,20 +296,13 @@ export function HeroLanding() {
                   </Link>
                 </li>
                 <li>
-                  <Link
-                    href="/create"
-                    className="text-muted-foreground transition-colors hover:text-foreground"
-                  >
-                    Create a room
-                  </Link>
-                </li>
-                <li>
-                  <Link
-                    href="/join"
-                    className="text-muted-foreground transition-colors hover:text-foreground"
+                  <button
+                    type="button"
+                    onClick={join?.openJoin}
+                    className="rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   >
                     Join a room
-                  </Link>
+                  </button>
                 </li>
                 <li>
                   <Link

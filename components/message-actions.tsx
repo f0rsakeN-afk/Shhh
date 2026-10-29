@@ -1,48 +1,39 @@
 "use client"
 
 import { MoreHorizontal, Trash2 } from "lucide-react"
-import { useCallback, useState } from "react"
+import { useCallback } from "react"
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "@/components/ui/menu"
+import { cn } from "@/lib/utils"
 
 interface MessageActionsProps {
   onDelete: () => void
 }
 
 export function MessageActions({ onDelete }: MessageActionsProps) {
-  const [showMenu, setShowMenu] = useState(false)
-
-  const toggleMenu = useCallback(() => {
-    setShowMenu((value) => !value)
-  }, [])
-
   const handleDelete = useCallback(() => {
     onDelete()
-    setShowMenu(false)
   }, [onDelete])
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={toggleMenu}
+    <Menu>
+      <MenuTrigger
         aria-label="Message actions"
-        aria-expanded={showMenu}
-        className="grid size-6 place-items-center rounded-md text-muted-foreground/60 opacity-0 transition-colors hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
+        className={cn(
+          "flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 text-base outline-none data-disabled:pointer-events-none data-highlighted:bg-accent data-inset:ps-8 data-[variant=destructive]:text-destructive-foreground data-highlighted:text-accent-foreground data-disabled:opacity-64 sm:text-sm [&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0 transition-colors duration-150 pointer-coarse:size-8 pointer-coarse:opacity-100 hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background group-hover:opacity-100 data-popup-open:bg-accent data-popup-open:text-foreground data-popup-open:opacity-100",
+        )}
       >
         <MoreHorizontal className="size-3.5" strokeWidth={1.8} />
-      </button>
-
-      {showMenu && (
-        <div className="absolute right-0 top-full z-40 mt-1.5 min-w-32 overflow-hidden rounded-lg border border-line bg-popover p-1 shadow-md">
-          <button
-            type="button"
-            onClick={handleDelete}
-            className="flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs text-destructive-foreground transition-colors hover:bg-destructive/[0.08]"
-          >
-            <Trash2 className="size-3.5" strokeWidth={1.8} />
-            Delete message
-          </button>
-        </div>
-      )}
-    </div>
+      </MenuTrigger>
+      <MenuPopup side="bottom" align="end" sideOffset={6}>
+        <MenuItem
+          variant="destructive"
+          onClick={handleDelete}
+          className="rounded-md px-2.5 py-1.5 text-[13px]"
+        >
+          <Trash2 className="size-3.5" />
+          Delete message
+        </MenuItem>
+      </MenuPopup>
+    </Menu>
   )
 }

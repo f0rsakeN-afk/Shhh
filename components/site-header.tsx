@@ -4,6 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Brand } from "@/components/brand";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { CreateRoomButton } from "@/components/create-room-button";
+import { useJoinRoom } from "@/components/join-room";
 import { cn } from "@/lib/utils";
 
 interface SiteHeaderProps {
@@ -11,16 +13,15 @@ interface SiteHeaderProps {
   className?: string;
 }
 
-const navItems = [
-  { title: "How it works", href: "/#how-it-works", match: "/" },
-  { title: "Join a room", href: "/join", match: "/join" },
-];
+const primaryCta =
+  "ml-0.5 inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-primary bg-primary px-3 text-[13px] font-medium text-primary-foreground shadow-xs transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:px-3.5 disabled:pointer-events-none disabled:opacity-60";
 
 export function SiteHeader({
   variant = "marketing",
   className,
 }: SiteHeaderProps) {
   const pathname = usePathname();
+  const join = useJoinRoom();
 
   return (
     <>
@@ -39,41 +40,44 @@ export function SiteHeader({
                 aria-label="Main navigation"
                 className="flex items-center gap-0.5"
               >
-                {navItems.map((item) => {
-                  const isActive =
-                    item.match === "/"
-                      ? pathname === "/"
-                      : pathname.startsWith(item.match);
+                <Link
+                  href="/#how-it-works"
+                  aria-current={pathname === "/" ? "page" : undefined}
+                  className={cn(
+                    "hidden rounded-md px-2 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:inline-flex",
+                    pathname === "/"
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  How it works
+                </Link>
 
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      aria-current={isActive ? "page" : undefined}
-                      className={cn(
-                        "rounded-md px-2 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                        item.match === "/" && "hidden sm:inline-flex",
-                        isActive
-                          ? "text-foreground"
-                          : "text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      {item.title}
-                    </Link>
-                  );
-                })}
+                <button
+                  type="button"
+                  onClick={join?.openJoin}
+                  className="rounded-md px-2 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                >
+                  Join a room
+                </button>
               </nav>
             )}
           </div>
 
           <div className="flex shrink-0 items-center gap-1 sm:gap-2">
             <ThemeToggle />
-            <Link
-              href={variant === "marketing" ? "/create" : "/"}
-              className="ml-0.5 inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-primary bg-primary px-3 text-[13px] font-medium text-primary-foreground shadow-xs transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:px-3.5"
-            >
-              {variant === "marketing" ? "New room" : "Home"}
-            </Link>
+            {variant === "marketing" ? (
+              <CreateRoomButton className={primaryCta}>
+                New room
+              </CreateRoomButton>
+            ) : (
+              <Link
+                href="/"
+                className={cn(primaryCta)}
+              >
+                Home
+              </Link>
+            )}
           </div>
         </div>
       </header>

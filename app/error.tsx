@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { RotateCcw } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
+import { JoinRoomProvider } from "@/components/join-room";
 
 export default function ErrorPage({
   error,
@@ -16,7 +17,7 @@ export default function ErrorPage({
   }, [error]);
 
   return (
-    <>
+    <JoinRoomProvider>
       <SiteHeader />
       <main
         id="main-content"
@@ -51,6 +52,6 @@ export default function ErrorPage({
           </div>
         </section>
       </main>
-    </>
+    </JoinRoomProvider>
   );
 }
