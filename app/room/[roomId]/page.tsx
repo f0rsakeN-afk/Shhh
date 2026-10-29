@@ -210,6 +210,7 @@ const Page = () => {
   })
 
   // On first mount, check for room-specific prior selection and show dialog
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const storedName = localStorage.getItem("selected_name_" + roomId)
     const storedAvatar = localStorage.getItem("selected_avatar_" + roomId)
@@ -228,6 +229,7 @@ const Page = () => {
       setShowSelectDialog(true)
     }
   }, [roomId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Restore session from storage (existing behavior, run after prior check)
   useEffect(() => {
@@ -282,6 +284,7 @@ const Page = () => {
   }, [cleanupRoom])
 
   // Join room after name/avatar selection
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!showSelectDialog && !hasJoined && selectedName && roomId) {
       setJoinedUsername(selectedName)
@@ -289,6 +292,7 @@ const Page = () => {
       joinRoom()
     }
   }, [showSelectDialog, hasJoined, selectedName, roomId, joinRoom])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Copy the invite once on entry so the link is ready to paste. Browsers can
   // reject clipboard access without a direct gesture, so this stays silent.
