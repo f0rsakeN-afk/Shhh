@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
 import { redis } from "./lib/redis"
 import { nanoid } from "nanoid"
+import { pendingKeyFor } from "./lib/room"
 
 const PRESENCE_TIMEOUT_MS = 60000
+/**
+ * A token issued by the proxy has this long to finish the join handshake.
+ * During the window a connected-but-not-yet-joined token is kept alive
+ * instead of being swept, so one user loading the room can never evict
+ * another user who is still picking a name.
+ */
+const JOIN_HANDSHAKE_WINDOW_MS = 5 * 60_000
 
 export const proxy = async (req: NextRequest) => {
   const pathname = req.nextUrl.pathname
@@ -20,16 +28,23 @@ export const proxy = async (req: NextRequest) => {
     return NextResponse.redirect(new URL("/?error=room-not-found", req.url))
   }
 
-  const connected: string[] = Array.isArray(meta.connected) 
-    ? meta.connected 
-    : typeof meta.connected === "string" 
-      ? JSON.parse(meta.connected) 
+  const connected: string[] = Array.isArray(meta.connected)
+    ? meta.connected
+    : typeof meta.connected === "string"
+      ? JSON.parse(meta.connected)
       : []
 
-  const [presenceData, usersData] = await Promise.all([
+  const [presenceData, usersData, pendingData] = await Promise.all([
     redis.hgetall<Record<string, string | { username: string; lastSeen: number }>>(`presence:${roomId}`),
     redis.hgetall<Record<string, string>>(`users:${roomId}`),
+    // This client version returns a flat alternating array: member, score, member, score, ...
+    redis.zrange<Array<string | number>>(pendingKeyFor(roomId), 0, -1, { withScores: true }),
   ])
+
+  const pendingIssuedAt = new Map<string, number>()
+  for (let i = 0; i + 1 < pendingData.length; i += 2) {
+    pendingIssuedAt.set(String(pendingData[i]), Number(pendingData[i + 1]))
+  }
 
   const existingToken = req.cookies.get("x-auth-token")?.value
 
@@ -43,9 +58,16 @@ export const proxy = async (req: NextRequest) => {
 
   for (const token of connected) {
     const hasUser = usersData?.[token]
-    
+
     if (!hasUser) {
-      staleTokens.push(token)
+      // Freshly issued tokens are still connecting; sweep only once the
+      // handshake window lapses.
+      const issuedAt = pendingIssuedAt.get(token)
+      if (issuedAt !== undefined && now - issuedAt < JOIN_HANDSHAKE_WINDOW_MS) {
+        activeTokens.add(token)
+      } else {
+        staleTokens.push(token)
+      }
       continue
     }
 
@@ -77,6 +99,10 @@ export const proxy = async (req: NextRequest) => {
       redis.hset(`meta:${roomId}`, {
         connected: JSON.stringify(cleanedConnected),
       }),
+      redis.zrem(
+        pendingKeyFor(roomId),
+        staleTokens.filter((token) => pendingIssuedAt.has(token)),
+      ),
       remaining > 0 ? redis.expire(`meta:${roomId}`, remaining) : Promise.resolve(),
     ])
   }
@@ -97,11 +123,19 @@ export const proxy = async (req: NextRequest) => {
   })
 
   const updatedConnected = connected.filter((t: string) => !staleTokens.includes(t))
+  const issuedAt = now
   await Promise.all([
     redis.hset(`meta:${roomId}`, {
       connected: JSON.stringify([...updatedConnected, token]),
     }),
-    remaining > 0 ? redis.expire(`meta:${roomId}`, remaining) : Promise.resolve(),
+    // Track the issuance so the staleness pass can spare connecting users.
+    redis.zadd(pendingKeyFor(roomId), { score: issuedAt, member: token }),
+    remaining > 0
+      ? Promise.all([
+          redis.expire(`meta:${roomId}`, remaining),
+          redis.expire(pendingKeyFor(roomId), remaining),
+        ])
+      : Promise.resolve(),
   ])
 
   return response

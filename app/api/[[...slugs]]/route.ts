@@ -16,7 +16,7 @@ import {
   type ReadReceipt,
   type Reaction,
 } from "@/lib/schemas"
-import { MAX_ROOM_PARTICIPANTS, ROOM_TTL_SECONDS } from "@/lib/room"
+import { MAX_ROOM_PARTICIPANTS, ROOM_TTL_SECONDS, pendingKeyFor } from "@/lib/room"
 import { sanitizeText, sanitizeUsername } from "@/lib/sanitize"
 
 const rooms = new Elysia({ prefix: "/room" })
@@ -115,6 +115,8 @@ const rooms = new Elysia({ prefix: "/room" })
         redis.hset(`users:${roomId}`, {
           [token]: JSON.stringify({ username, avatar }),
         }),
+        // The token finished its join handshake; drop its pending marker.
+        redis.zrem(pendingKeyFor(roomId), token),
         remaining > 0 ? redis.expire(`users:${roomId}`, remaining) : Promise.resolve(),
         realtime.channel(roomId).emit("chat.connection", {
           username,
@@ -155,6 +157,7 @@ const rooms = new Elysia({ prefix: "/room" })
         `users:${roomId}`,
         `presence:${roomId}`,
         `history:${roomId}`,
+        pendingKeyFor(roomId),
       ]
 
       await Promise.all(keysToDelete.map((key) => redis.del(key)))
