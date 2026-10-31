@@ -9,6 +9,24 @@ const AVATAR_TONES = [
 
 export { AVATAR_TONES }
 
+/**
+ * Ten animal avatar emojis users can pick at join time. The chosen index is
+ * sent to the backend and broadcast with presence and messages so every
+ * participant renders the same avatar for the same person.
+ */
+const AVATAR_EMOJIS = [
+  "🐵", "🐶", "🐱", "🐭", "🐰",
+  "🐻", "🐧", "🐸", "🐙", "🐼",
+] as const
+
+export { AVATAR_EMOJIS }
+
+export function getAvatarEmoji(avatar: number | string | undefined | null): string | undefined {
+  const index = typeof avatar === "string" ? parseInt(avatar, 10) : avatar
+  if (typeof index !== "number" || Number.isNaN(index)) return undefined
+  return AVATAR_EMOJIS[index] ?? undefined
+}
+
 export function getUserColor(username: string) {
   let hash = 0
   for (let i = 0; i < username.length; i++) {
@@ -22,7 +40,7 @@ export function getInitials(username: string): string {
   if (!username) return "?"
   const parts = username.split("-")
   if (parts.length >= 2 && parts[1]) {
-    return parts[1].charAt(0).toUpperCase()
+    return parts[1].charAt(0).replace(/[^a-zA-Z]/g, "").toUpperCase()
   }
   return username.charAt(0).toUpperCase()
 }

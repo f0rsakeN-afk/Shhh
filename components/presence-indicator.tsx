@@ -6,7 +6,11 @@ import { cn } from "@/lib/utils"
 interface PresenceIndicatorProps {
   username: string
   status: "online" | "offline" | "away"
-  participants?: Array<{ username: string; status: "online" | "offline" | "away" }>
+  participants?: Array<{
+    username: string
+    status: "online" | "offline" | "away"
+    avatar?: number
+  }>
 }
 
 /** Single-user status label */
@@ -24,7 +28,7 @@ function ParticipantTag({
   part,
   currentUsername,
 }: {
-  part: { username: string; status: "online" | "offline" | "away" }
+  part: { username: string; status: "online" | "offline" | "away"; avatar?: number }
   currentUsername: string
 }) {
   const isCurrent = part.username === currentUsername
@@ -37,7 +41,7 @@ function ParticipantTag({
         isCurrent && "ring-2 ring-primary/30 ring-offset-2 ring-offset-background",
       )}
     >
-      <UserAvatar username={part.username} size="sm" isCurrentUser={isCurrent} />
+      <UserAvatar username={part.username} avatar={part.avatar} size="sm" isCurrentUser={isCurrent} />
       <span className="min-w-0 flex-1 truncate text-foreground">
         {part.username}
       </span>

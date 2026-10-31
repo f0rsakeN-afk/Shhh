@@ -1,15 +1,23 @@
 import { redis } from "@/lib/redis"
 import { Elysia, t } from "elysia"
 import { nanoid } from "nanoid"
-import { authMiddleware } from "./auth"
+import {
+  authMiddleware,
+  identityUnknown,
+  messageNotFound,
+  ownershipForbidden,
+} from "./auth"
 import { realtime } from "@/lib/realtime"
 import {
   roomIdQuerySchema,
   createMessageBodySchema,
+  editMessageBodySchema,
   type Message,
+  type ReadReceipt,
   type Reaction,
 } from "@/lib/schemas"
 import { MAX_ROOM_PARTICIPANTS, ROOM_TTL_SECONDS } from "@/lib/room"
+import { sanitizeText, sanitizeUsername } from "@/lib/sanitize"
 
 const rooms = new Elysia({ prefix: "/room" })
   .post("/create", async () => {
@@ -91,29 +99,38 @@ const rooms = new Elysia({ prefix: "/room" })
   .post(
     "/join",
     async ({ body, auth }) => {
-      const { username } = body
+      const username = sanitizeUsername(body.username)
       const { roomId, token } = auth
-      
+      const avatar =
+        typeof body.avatar === "number" &&
+        Number.isInteger(body.avatar) &&
+        body.avatar >= 0 &&
+        body.avatar <= 9
+          ? body.avatar
+          : undefined
+
       const remaining = await redis.ttl(`meta:${roomId}`)
-      
+
       await Promise.all([
         redis.hset(`users:${roomId}`, {
-          [token]: username,
+          [token]: JSON.stringify({ username, avatar }),
         }),
         remaining > 0 ? redis.expire(`users:${roomId}`, remaining) : Promise.resolve(),
         realtime.channel(roomId).emit("chat.connection", {
           username,
           action: "joined",
           timestamp: Date.now(),
+          avatar,
         }),
       ])
-      
+
       return { success: true }
     },
     {
       query: roomIdQuerySchema,
       body: t.Object({
-        username: t.String(),
+        username: t.String({ maxLength: 100 }),
+        avatar: t.Optional(t.Integer({ minimum: 0, maximum: 9 })),
       }),
     }
   )
@@ -150,7 +167,15 @@ const messages = new Elysia({ prefix: "/messages" })
   .post(
     "/",
     async ({ body, auth }) => {
-      const { sender, text } = body
+      const sender = sanitizeUsername(body.sender)
+      const text = sanitizeText(body.text)
+      const avatar =
+        typeof body.avatar === "number" &&
+        Number.isInteger(body.avatar) &&
+        body.avatar >= 0 &&
+        body.avatar <= 9
+          ? body.avatar
+          : undefined
       const { roomId } = auth
 
 
@@ -160,6 +185,7 @@ const messages = new Elysia({ prefix: "/messages" })
         text,
         timestamp: Date.now(),
         roomId,
+        avatar,
       }
 
       const messageWithToken = JSON.stringify({ ...message, token: auth.token })
@@ -177,6 +203,57 @@ const messages = new Elysia({ prefix: "/messages" })
     {
       query: roomIdQuerySchema,
       body: createMessageBodySchema,
+    }
+  )
+  .post(
+    "/edit",
+    async ({ body, auth }) => {
+      const { messageId, text } = body
+      const { roomId, token } = auth
+
+      const messages = await redis.lrange<string>(`messages:${roomId}`, 0, -1)
+      const messageIndex = messages.findIndex((m) => {
+        const parsed = typeof m === "string" ? JSON.parse(m) : m
+        return parsed.id === messageId
+      })
+
+      if (messageIndex === -1) {
+        return messageNotFound()
+      }
+
+      const messageStr = messages[messageIndex]
+      const message = typeof messageStr === "string" ? JSON.parse(messageStr) : messageStr
+      if (message.token !== token) {
+        // Explicit 403 response: scoped plugin errors do not reach this
+        // router's error pipeline, and ownership must never surface as a 500.
+        return ownershipForbidden()
+      }
+      if (message.deleted) {
+        throw new Error("Message deleted")
+      }
+
+      const updatedMessage = { ...message, text: sanitizeText(text), edited: true }
+      await redis.lset(`messages:${roomId}`, messageIndex, JSON.stringify(updatedMessage))
+
+      await Promise.all([
+        realtime.channel(roomId).emit("chat.edited", {
+          messageId,
+          text: updatedMessage.text,
+          editedAt: Date.now(),
+        }),
+        (async () => {
+          const remaining = await redis.ttl(`meta:${roomId}`)
+          if (remaining > 0) {
+            await redis.expire(`messages:${roomId}`, remaining)
+          }
+        })(),
+      ])
+
+      return { success: true }
+    },
+    {
+      query: roomIdQuerySchema,
+      body: editMessageBodySchema,
     }
   )
   .get(
@@ -199,8 +276,16 @@ const messages = new Elysia({ prefix: "/messages" })
   .post(
     "/reaction",
     async ({ body, auth }) => {
-      const { messageId, emoji, username, action } = body
-      const { roomId } = auth
+      const { messageId, emoji, action } = body
+      const { roomId, user } = auth
+
+      // The reacting identity is derived from the auth token, never from the
+      // request body, so a client can only ever add or remove its own
+      // reaction and cannot touch other people's.
+      const username = user?.username
+      if (!username) {
+        return identityUnknown()
+      }
 
       const messages = await redis.lrange<string>(`messages:${roomId}`, 0, -1)
       const messageIndex = messages.findIndex((m) => {
@@ -209,43 +294,30 @@ const messages = new Elysia({ prefix: "/messages" })
       })
 
       if (messageIndex === -1) {
-        throw new Error("Message not found")
+        return messageNotFound()
       }
 
       const messageStr = messages[messageIndex]
       const message = typeof messageStr === "string" ? JSON.parse(messageStr) : messageStr
-      const reactions = message.reactions || []
-
-      let updatedReactions: typeof reactions
-      if (action === "add") {
-        const existingIndex = reactions.findIndex(
-          (r: Reaction) => r.emoji === emoji && r.username === username
-        )
-        if (existingIndex === -1) {
-          updatedReactions = [
-            ...reactions,
-            { emoji, username, timestamp: Date.now() },
-          ]
-        } else {
-          updatedReactions = reactions
-        }
-      } else {
-        updatedReactions = reactions.filter(
-          (r: Reaction) => !(r.emoji === emoji && r.username === username)
-        )
-      }
+      // Invariant: one reaction per user per message. "add" replaces any
+      // emoji they previously chose; "remove" is idempotent. Last write
+      // wins when two people race; neither can corrupt the other's entry.
+      const reactionsWithoutMine = (message.reactions || []).filter(
+        (r: Reaction) => r.username !== username,
+      )
+      const updatedReactions =
+        action === "add"
+          ? [...reactionsWithoutMine, { emoji, username, timestamp: Date.now() }]
+          : reactionsWithoutMine
 
       const updatedMessage = { ...message, reactions: updatedReactions }
       const updatedMessageStr = JSON.stringify(updatedMessage)
 
       await Promise.all([
         redis.lset(`messages:${roomId}`, messageIndex, updatedMessageStr),
-        realtime.channel(roomId).emit("chat.reaction", {
-          messageId,
-          emoji,
-          username,
-          action,
-        }),
+        realtime
+          .channel(roomId)
+          .emit("chat.reaction", { messageId, reactions: updatedReactions }),
       ])
 
       const remaining = await redis.ttl(`meta:${roomId}`)
@@ -260,7 +332,6 @@ const messages = new Elysia({ prefix: "/messages" })
       body: t.Object({
         messageId: t.String(),
         emoji: t.String(),
-        username: t.String(),
         action: t.Union([t.Literal("add"), t.Literal("remove")]),
       }),
     }
@@ -268,8 +339,14 @@ const messages = new Elysia({ prefix: "/messages" })
   .post(
     "/read",
     async ({ body, auth }) => {
-      const { messageId, username } = body
-      const { roomId } = auth
+      const { messageId } = body
+      const { roomId, user } = auth
+      // Receipts are attributed to the token's identity; a body username is
+      // never trusted, so no one can forge someone else's read receipt.
+      const username = user?.username
+      if (!username) {
+        return { success: true }
+      }
 
       const messages = await redis.lrange<string>(`messages:${roomId}`, 0, -1)
       const messageIndex = messages.findIndex((m) => {
@@ -278,14 +355,16 @@ const messages = new Elysia({ prefix: "/messages" })
       })
 
       if (messageIndex === -1) {
-        throw new Error("Message not found")
+        return messageNotFound()
       }
 
       const messageStr = messages[messageIndex]
       const message: Message = typeof messageStr === "string" ? JSON.parse(messageStr) : messageStr
       const readBy = message.readBy || []
       
-      const alreadyRead = readBy.some((r) => r.username === username)
+      const alreadyRead = readBy.some(
+        (r: ReadReceipt) => r.username === username,
+      )
       if (!alreadyRead) {
         const updatedReadBy = [
           ...readBy,
@@ -304,7 +383,6 @@ const messages = new Elysia({ prefix: "/messages" })
       query: roomIdQuerySchema,
       body: t.Object({
         messageId: t.String(),
-        username: t.String(),
       }),
     }
   )
@@ -321,13 +399,15 @@ const messages = new Elysia({ prefix: "/messages" })
       })
 
       if (messageIndex === -1) {
-        throw new Error("Message not found")
+        return messageNotFound()
       }
 
       const messageStr = messages[messageIndex]
       const message = typeof messageStr === "string" ? JSON.parse(messageStr) : messageStr
       if (message.token !== token) {
-        throw new Error("Unauthorized")
+        // Explicit 403 response: scoped plugin errors do not reach this
+        // router's error pipeline, and ownership must never surface as a 500.
+        return ownershipForbidden()
       }
 
       const deletedMessage = { ...message, deleted: true, text: "" }
@@ -353,21 +433,32 @@ const presence = new Elysia({ prefix: "/presence" })
   .post(
     "/typing",
     async ({ body, auth }) => {
-      const { username, isTyping } = body
-      await realtime.channel(auth.roomId).emit("chat.typing", { username, isTyping })
+      const { isTyping } = body
+      const username = auth.user?.username
+      if (!username) {
+        return { success: true }
+      }
+
+      await realtime.channel(auth.roomId).emit("chat.typing", {
+        username,
+        isTyping,
+      })
     },
     {
       query: roomIdQuerySchema,
       body: t.Object({
-        username: t.String(),
         isTyping: t.Boolean(),
       }),
     }
   )
   .post(
     "/heartbeat",
-    async ({ body, auth }) => {
-      const { username } = body
+    async ({ auth }) => {
+      const username = auth.user?.username
+      if (!username) {
+        return { success: true }
+      }
+
       const now = Date.now()
       
       const remaining = await redis.ttl(`meta:${auth.roomId}`)
@@ -386,26 +477,42 @@ const presence = new Elysia({ prefix: "/presence" })
     },
     {
       query: roomIdQuerySchema,
-      body: t.Object({
-        username: t.String(),
-      }),
     }
   )
   .get(
     "/",
     async ({ auth }) => {
       const presenceData = await redis.hgetall<Record<string, string | { username: string; lastSeen: number }>>(`presence:${auth.roomId}`)
-      
-      const users = Object.entries(presenceData || {}).map(([, data]) => {
+      const usersData = await redis.hgetall<Record<string, string | { username: string; avatar?: number }>>(`users:${auth.roomId}`)
+
+      const users = Object.entries(presenceData || {}).map(([token, data]) => {
         const parsed = typeof data === "string" ? JSON.parse(data) : data
         const isOnline = Date.now() - parsed.lastSeen < 60000
+        let avatar: number | undefined
+        if (usersData && typeof usersData[token] === "string") {
+          try {
+            const parsedUser = JSON.parse(usersData[token] as string)
+            if (
+              typeof parsedUser === "object" &&
+              parsedUser !== null &&
+              Number.isInteger(parsedUser.avatar) &&
+              parsedUser.avatar >= 0 &&
+              parsedUser.avatar <= 9
+            ) {
+              avatar = parsedUser.avatar
+            }
+          } catch {
+            // Pre-avatar join data stores a plain username string.
+          }
+        }
         return {
           username: parsed.username,
           status: isOnline ? ("online" as const) : ("offline" as const),
           lastSeen: parsed.lastSeen,
+          avatar,
         }
       })
-      
+
       return { users }
     },
     { query: roomIdQuerySchema }

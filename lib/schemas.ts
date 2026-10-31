@@ -18,6 +18,7 @@ export const messageSchema = z.object({
   timestamp: z.number(),
   roomId: z.string(),
   token: z.string().optional(),
+  avatar: z.number().optional(),
   reactions: z.array(reactionSchema).optional(),
   readBy: z.array(readReceiptSchema).optional(),
   edited: z.boolean().optional(),
@@ -35,6 +36,12 @@ export const roomIdQuerySchema = z.object({
 export const createMessageBodySchema = z.object({
   sender: z.string().max(100),
   text: z.string().max(1000),
+  avatar: z.number().int().min(0).max(9).optional(),
+})
+
+export const editMessageBodySchema = z.object({
+  messageId: z.string(),
+  text: z.string().max(1000),
 })
 
 export const typingSchema = z.object({
@@ -46,19 +53,27 @@ export const presenceSchema = z.object({
   username: z.string(),
   status: z.enum(["online", "offline", "away"]),
   lastSeen: z.number().optional(),
+  avatar: z.number().optional(),
 })
 
 export const connectionSchema = z.object({
   username: z.string(),
   action: z.enum(["joined", "left"]),
   timestamp: z.number(),
+  avatar: z.number().optional(),
+})
+
+export const messageEditSchema = z.object({
+  messageId: z.string(),
+  text: z.string(),
+  editedAt: z.number().optional(),
 })
 
 export const reactionUpdateSchema = z.object({
   messageId: z.string(),
-  emoji: z.string(),
-  username: z.string(),
-  action: z.enum(["add", "remove"]),
+  // Server-authoritative normalized state for the whole message. Clients
+  // assign it instead of merging deltas so everyone converges.
+  reactions: z.array(reactionSchema),
 })
 
 export const realtimeSchema = {
@@ -69,6 +84,7 @@ export const realtimeSchema = {
     presence: presenceSchema,
     connection: connectionSchema,
     reaction: reactionUpdateSchema,
+    edited: messageEditSchema,
   },
 }
 
@@ -79,3 +95,4 @@ export type ReadReceipt = z.infer<typeof readReceiptSchema>
 export type ChatDestroy = z.infer<typeof chatDestroySchema>
 export type RoomIdQuery = z.infer<typeof roomIdQuerySchema>
 export type CreateMessageBody = z.infer<typeof createMessageBodySchema>
+export type MessageEdit = z.infer<typeof messageEditSchema>

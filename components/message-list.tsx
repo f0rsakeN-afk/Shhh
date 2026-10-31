@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { MessageCircle } from "lucide-react"
+import { MessageCircle, SearchX } from "lucide-react"
+import { format } from "date-fns"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Empty,
@@ -20,6 +21,21 @@ interface MessageListProps {
   onReaction?: (messageId: string, emoji: string, action: "add" | "remove") => void
   onMessageRead?: (messageId: string) => void
   onDelete?: (messageId: string) => void
+  onEdit?: (messageId: string) => void
+  /** Shown while search filtering hides most messages. */
+  emptyNotice?: string | null
+}
+
+/** Human day label for separators: "Today" / "Yesterday" / "March 4". */
+function formatSeparationDate(timestamp: number): string {
+  const date = new Date(timestamp)
+  const now = new Date()
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+
+  if (date.toDateString() === now.toDateString()) return "Today"
+  if (date.toDateString() === yesterday.toDateString()) return "Yesterday"
+  return format(date, "MMMM d")
 }
 
 export function MessageList({
@@ -29,6 +45,8 @@ export function MessageList({
   onReaction,
   onMessageRead,
   onDelete,
+  onEdit,
+  emptyNotice = null,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -109,23 +127,40 @@ export function MessageList({
             <div className="flex min-h-[320px] items-center justify-center sm:min-h-[420px]">
               <Empty className="border border-dashed border-line bg-card">
                 <EmptyMedia variant="icon">
-                  <MessageCircle className="size-4 text-brand" strokeWidth={1.8} />
+                  {emptyNotice ? (
+                    <SearchX className="size-4 text-brand" strokeWidth={1.8} />
+                  ) : (
+                    <MessageCircle className="size-4 text-brand" strokeWidth={1.8} />
+                  )}
                 </EmptyMedia>
                 <EmptyHeader>
                   <EmptyTitle className="text-lg font-semibold tracking-tight text-foreground">
-                    The room is quiet
+                    {emptyNotice ? "No matching messages" : "The room is quiet"}
                   </EmptyTitle>
                   <EmptyDescription className="text-sm leading-relaxed text-muted-foreground">
-                    Say something. When the timer ends, this room and everything
-                    in it disappear.
+                    {emptyNotice
+                      ? "Try a different word or clear the search to see the whole conversation."
+                      : "Say something. When the timer ends, this room and everything in it disappear."}
                   </EmptyDescription>
                 </EmptyHeader>
               </Empty>
             </div>
           )}
 
-          {messages.map((msg) => {
+          {messages.map((msg, index) => {
             const isNewMessage = !animatedMessages.has(msg.id)
+            // Day separators give the canvas a reading rhythm; they are
+            // skipped while filtering so scan results stay compact.
+            const showDay = !emptyNotice && messages.length > 1
+            const previous = index > 0 ? messages[index - 1] : undefined
+            const startsDay =
+              showDay &&
+              (!previous ||
+                new Date(previous.timestamp).toDateString() !==
+                  new Date(msg.timestamp).toDateString())
+            const dayLabel = startsDay
+              ? formatSeparationDate(msg.timestamp)
+              : ""
 
             return (
               <div
@@ -137,12 +172,26 @@ export function MessageList({
                 data-message-id={msg.id}
                 className={isNewMessage ? "message-enter" : ""}
               >
+                {startsDay && (
+                  <div
+                    role="separator"
+                    aria-label={dayLabel}
+                    className="mb-5 mt-1 flex items-center gap-3"
+                  >
+                    <span className="h-px flex-1 bg-line" aria-hidden="true" />
+                    <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                      {dayLabel}
+                    </span>
+                    <span className="h-px flex-1 bg-line" aria-hidden="true" />
+                  </div>
+                )}
                 <MessageItem
                   message={msg}
                   currentUsername={currentUsername}
                   otherUsername={otherUsername}
                   onReaction={onReaction}
                   onDelete={onDelete}
+                  onEdit={onEdit}
                 />
               </div>
             )
