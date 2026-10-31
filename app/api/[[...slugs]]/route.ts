@@ -19,6 +19,48 @@ import {
 import { MAX_ROOM_PARTICIPANTS, ROOM_TTL_SECONDS, pendingKeyFor } from "@/lib/room"
 import { sanitizeText, sanitizeUsername } from "@/lib/sanitize"
 
+// Message model: a HASH gives O(1) point reads/writes per message id (used
+// by reactions, receipts, edits and deletes) and a ZSET keeps the transcript
+// ordered by timestamp so history loads never scan or reorder data.
+const msgKeyFor = (roomId: string) => `msg:${roomId}`
+const msgOrderKeyFor = (roomId: string) => `order:${roomId}`
+
+/**
+ * The Upstash client auto-deserializes valid JSON payloads, so a stored
+ * message may arrive as either its raw JSON string or an already-parsed
+ * object depending on which client version wrote it.
+ */
+type StoredMessage = string | Message | null
+
+function parseStoredMessage(raw: StoredMessage): Message | null {
+  if (raw === null || raw === undefined) return null
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as Message
+    } catch {
+      return null
+    }
+  }
+  return raw
+}
+
+async function readMessage(roomId: string, messageId: string): Promise<Message | null> {
+  const raw = await redis.hget<StoredMessage>(msgKeyFor(roomId), messageId)
+  return parseStoredMessage(raw)
+}
+
+async function writeMessage(roomId: string, message: Message): Promise<void> {
+  await redis.hset(msgKeyFor(roomId), { [message.id]: JSON.stringify(message) })
+}
+
+/** Keeps room keys on the room's remaining lifetime. */
+async function retainRoomTtl(roomId: string, keys: string[]): Promise<void> {
+  const remaining = await redis.ttl(`meta:${roomId}`)
+  if (remaining > 0) {
+    await Promise.all(keys.map((key) => redis.expire(key, remaining)))
+  }
+}
+
 const rooms = new Elysia({ prefix: "/room" })
   .post("/create", async () => {
     const roomId = nanoid()
@@ -158,6 +200,8 @@ const rooms = new Elysia({ prefix: "/room" })
         `presence:${roomId}`,
         `history:${roomId}`,
         pendingKeyFor(roomId),
+        msgKeyFor(roomId),
+        msgOrderKeyFor(roomId),
       ]
 
       await Promise.all(keysToDelete.map((key) => redis.del(key)))
@@ -181,7 +225,6 @@ const messages = new Elysia({ prefix: "/messages" })
           : undefined
       const { roomId } = auth
 
-
       const message: Message = {
         id: nanoid(),
         sender,
@@ -191,17 +234,22 @@ const messages = new Elysia({ prefix: "/messages" })
         avatar,
       }
 
-      const messageWithToken = JSON.stringify({ ...message, token: auth.token })
-
+      // HASH for O(1) point access, ZSET for timestamp ordering: reactions,
+      // receipts, edits and deletes never scan the conversation.
       await Promise.all([
-        redis.rpush(`messages:${roomId}`, messageWithToken),
+        redis.hset(msgKeyFor(roomId), {
+          [message.id]: JSON.stringify({ ...message, token: auth.token }),
+        }),
+        redis.zadd(msgOrderKeyFor(roomId), {
+          member: message.id,
+          score: message.timestamp,
+        }),
         realtime.channel(roomId).emit("chat.message", message),
       ])
 
-      const remaining = await redis.ttl(`meta:${roomId}`)
-      if (remaining > 0) {
-        await redis.expire(`messages:${roomId}`, remaining)
-      }
+      await retainRoomTtl(roomId, [msgKeyFor(roomId), msgOrderKeyFor(roomId)])
+
+      return { success: true }
     },
     {
       query: roomIdQuerySchema,
@@ -214,29 +262,22 @@ const messages = new Elysia({ prefix: "/messages" })
       const { messageId, text } = body
       const { roomId, token } = auth
 
-      const messages = await redis.lrange<string>(`messages:${roomId}`, 0, -1)
-      const messageIndex = messages.findIndex((m) => {
-        const parsed = typeof m === "string" ? JSON.parse(m) : m
-        return parsed.id === messageId
-      })
-
-      if (messageIndex === -1) {
+      const message = await readMessage(roomId, messageId)
+      if (!message) {
         return messageNotFound()
       }
 
-      const messageStr = messages[messageIndex]
-      const message = typeof messageStr === "string" ? JSON.parse(messageStr) : messageStr
       if (message.token !== token) {
         // Explicit 403 response: scoped plugin errors do not reach this
         // router's error pipeline, and ownership must never surface as a 500.
         return ownershipForbidden()
       }
       if (message.deleted) {
-        throw new Error("Message deleted")
+        return messageNotFound()
       }
 
       const updatedMessage = { ...message, text: sanitizeText(text), edited: true }
-      await redis.lset(`messages:${roomId}`, messageIndex, JSON.stringify(updatedMessage))
+      await writeMessage(roomId, updatedMessage)
 
       await Promise.all([
         realtime.channel(roomId).emit("chat.edited", {
@@ -244,12 +285,7 @@ const messages = new Elysia({ prefix: "/messages" })
           text: updatedMessage.text,
           editedAt: Date.now(),
         }),
-        (async () => {
-          const remaining = await redis.ttl(`meta:${roomId}`)
-          if (remaining > 0) {
-            await redis.expire(`messages:${roomId}`, remaining)
-          }
-        })(),
+        retainRoomTtl(roomId, [msgKeyFor(roomId)]),
       ])
 
       return { success: true }
@@ -262,17 +298,30 @@ const messages = new Elysia({ prefix: "/messages" })
   .get(
     "/",
     async ({ auth }) => {
-      const messages = await redis.lrange<string>(`messages:${auth.roomId}`, 0, -1)
+      const { roomId, token } = auth
 
-      return {
-        messages: messages.map((m) => {
-          const parsed = typeof m === "string" ? JSON.parse(m) : m
-          return {
-            ...parsed,
-            token: parsed.token === auth.token ? auth.token : undefined,
-          }
-        }),
+      // Ordered ids, then one multi-fetch for the payloads: two Redis calls
+      // per history load regardless of transcript size.
+      const ids = await redis.zrange<string[]>(msgOrderKeyFor(roomId), 0, -1)
+      if (ids.length === 0) {
+        return { messages: [] }
       }
+
+      const stored = await redis.hmget<Record<string, StoredMessage>>(
+        msgKeyFor(roomId),
+        ...(ids as string[]),
+      )
+
+      const byId = new Map(Object.entries(stored ?? {}))
+      const messages = ids
+        .map((id) => parseStoredMessage((byId.get(id) ?? null) as StoredMessage))
+        .filter((message): message is Message => message !== null)
+        .map((message) => ({
+          ...message,
+          token: message.token === token ? token : undefined,
+        }))
+
+      return { messages }
     },
     { query: roomIdQuerySchema }
   )
@@ -290,18 +339,11 @@ const messages = new Elysia({ prefix: "/messages" })
         return identityUnknown()
       }
 
-      const messages = await redis.lrange<string>(`messages:${roomId}`, 0, -1)
-      const messageIndex = messages.findIndex((m) => {
-        const parsed = typeof m === "string" ? JSON.parse(m) : m
-        return parsed.id === messageId
-      })
-
-      if (messageIndex === -1) {
+      const message = await readMessage(roomId, messageId)
+      if (!message) {
         return messageNotFound()
       }
 
-      const messageStr = messages[messageIndex]
-      const message = typeof messageStr === "string" ? JSON.parse(messageStr) : messageStr
       // Invariant: one reaction per user per message. "add" replaces any
       // emoji they previously chose; "remove" is idempotent. Last write
       // wins when two people race; neither can corrupt the other's entry.
@@ -314,19 +356,14 @@ const messages = new Elysia({ prefix: "/messages" })
           : reactionsWithoutMine
 
       const updatedMessage = { ...message, reactions: updatedReactions }
-      const updatedMessageStr = JSON.stringify(updatedMessage)
+      await writeMessage(roomId, updatedMessage)
 
       await Promise.all([
-        redis.lset(`messages:${roomId}`, messageIndex, updatedMessageStr),
         realtime
           .channel(roomId)
           .emit("chat.reaction", { messageId, reactions: updatedReactions }),
+        retainRoomTtl(roomId, [msgKeyFor(roomId), msgOrderKeyFor(roomId)]),
       ])
-
-      const remaining = await redis.ttl(`meta:${roomId}`)
-      if (remaining > 0) {
-        await redis.expire(`messages:${roomId}`, remaining)
-      }
 
       return { success: true }
     },
@@ -351,33 +388,23 @@ const messages = new Elysia({ prefix: "/messages" })
         return { success: true }
       }
 
-      const messages = await redis.lrange<string>(`messages:${roomId}`, 0, -1)
-      const messageIndex = messages.findIndex((m) => {
-        const parsed = typeof m === "string" ? JSON.parse(m) : m
-        return parsed.id === messageId
-      })
-
-      if (messageIndex === -1) {
+      const message = await readMessage(roomId, messageId)
+      if (!message) {
         return messageNotFound()
       }
 
-      const messageStr = messages[messageIndex]
-      const message: Message = typeof messageStr === "string" ? JSON.parse(messageStr) : messageStr
       const readBy = message.readBy || []
-      
+
       const alreadyRead = readBy.some(
         (r: ReadReceipt) => r.username === username,
       )
       if (!alreadyRead) {
-        const updatedReadBy = [
-          ...readBy,
-          { username, timestamp: Date.now() },
-        ]
-        const updatedMessage = { ...message, readBy: updatedReadBy }
-        await redis.lset(`messages:${roomId}`, messageIndex, JSON.stringify(updatedMessage))
-
-        const remaining = await redis.ttl(`meta:${roomId}`)
-        await redis.expire(`messages:${roomId}`, remaining)
+        const updatedMessage = {
+          ...message,
+          readBy: [...readBy, { username, timestamp: Date.now() }],
+        }
+        await writeMessage(roomId, updatedMessage)
+        await retainRoomTtl(roomId, [msgKeyFor(roomId)])
       }
 
       return { success: true }
@@ -395,18 +422,11 @@ const messages = new Elysia({ prefix: "/messages" })
       const { messageId } = query
       const { roomId, token } = auth
 
-      const messages = await redis.lrange<string>(`messages:${roomId}`, 0, -1)
-      const messageIndex = messages.findIndex((m) => {
-        const parsed = typeof m === "string" ? JSON.parse(m) : m
-        return parsed.id === messageId
-      })
-
-      if (messageIndex === -1) {
+      const message = await readMessage(roomId, messageId)
+      if (!message) {
         return messageNotFound()
       }
 
-      const messageStr = messages[messageIndex]
-      const message = typeof messageStr === "string" ? JSON.parse(messageStr) : messageStr
       if (message.token !== token) {
         // Explicit 403 response: scoped plugin errors do not reach this
         // router's error pipeline, and ownership must never surface as a 500.
@@ -414,12 +434,16 @@ const messages = new Elysia({ prefix: "/messages" })
       }
 
       const deletedMessage = { ...message, deleted: true, text: "" }
-      await redis.lset(`messages:${roomId}`, messageIndex, JSON.stringify(deletedMessage))
+      await writeMessage(roomId, deletedMessage)
 
-      await realtime.channel(roomId).emit("chat.message", deletedMessage)
-
-      const remaining = await redis.ttl(`meta:${roomId}`)
-      await redis.expire(`messages:${roomId}`, remaining)
+      // The stored copy keeps the owner token, but broadcasts must not leak
+      // it to other participants.
+      await Promise.all([
+        realtime
+          .channel(roomId)
+          .emit("chat.message", { ...deletedMessage, token: undefined }),
+        retainRoomTtl(roomId, [msgKeyFor(roomId), msgOrderKeyFor(roomId)]),
+      ])
 
       return { success: true }
     },
