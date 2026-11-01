@@ -12,6 +12,76 @@ const PRESENCE_TIMEOUT_MS = 60000
  */
 const JOIN_HANDSHAKE_WINDOW_MS = 5 * 60_000
 
+/**
+ * Reload storms with fresh cookie jars cannot grow the pending set past
+ * this cap: oldest abandoned tokens are dropped immediately rather than
+ * waiting out the handshake window, so they cannot occupy room capacity.
+ */
+const PENDING_MAX = 10
+
+/**
+ * Registers a token in the room atomically. The connected list and the
+ * pending index are written together; concurrent page loads cannot lose
+ * each other's tokens to a read-modify-write race, and an over-cap
+ * pending set trims its oldest members (also dropping them from
+ * connected so they release their slot at once).
+ */
+const ADD_TOKEN_SCRIPT = `local raw = redis.call('HGET', KEYS[1], 'connected')
+local list = raw and cjson.decode(raw) or {}
+local exists = false
+for _, t in ipairs(list) do
+  if t == ARGV[1] then exists = true end
+end
+if not exists then
+  table.insert(list, ARGV[1])
+  redis.call('HSET', KEYS[1], 'connected', cjson.encode(list))
+end
+redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1])
+local pending = redis.call('ZCARD', KEYS[2])
+local over = pending - tonumber(ARGV[3])
+if over > 0 then
+  local dropped = redis.call('ZRANGEBYRANK', KEYS[2], 0, over - 1)
+  redis.call('ZREMRANGEBYRANK', KEYS[2], 0, over - 1)
+  if #dropped > 0 then
+    local kept = {}
+    for _, t in ipairs(list) do
+      local isDropped = false
+      for _, d in ipairs(dropped) do
+        if t == d then isDropped = true end
+      end
+      if not isDropped then table.insert(kept, t) end
+    end
+    list = kept
+    redis.call('HSET', KEYS[1], 'connected', cjson.encode(list))
+  end
+end
+return cjson.encode(list)`
+
+/**
+ * Removes stale (unresponsive or past-handshake) tokens from the room
+ * atomically: connected, the pending index, and the joined-user/presence
+ * entries all go together, so swept tokens cannot linger as phantom
+ * capacity and block later joins.
+ */
+const SWEEP_TOKENS_SCRIPT = `local raw = redis.call('HGET', KEYS[1], 'connected')
+if not raw then return 0 end
+local list = cjson.decode(raw)
+local stale = {}
+for _, t in ipairs(ARGV) do stale[t] = true end
+local kept = {}
+for _, t in ipairs(list) do
+  if not stale[t] then table.insert(kept, t) end
+end
+redis.call('HSET', KEYS[1], 'connected', cjson.encode(kept))
+redis.call('ZREM', KEYS[2], unpack(ARGV))
+for _, key in ipairs({ KEYS[3], KEYS[4] }) do
+  local removed = redis.call('HDEL', key, unpack(ARGV))
+end
+if #kept == 0 then
+  redis.call('HSET', KEYS[1], 'connected', '[]')
+end
+return 1`
+
 export const proxy = async (req: NextRequest) => {
   const pathname = req.nextUrl.pathname
 
@@ -61,9 +131,10 @@ export const proxy = async (req: NextRequest) => {
 
     if (!hasUser) {
       // Freshly issued tokens are still connecting; sweep only once the
-      // handshake window lapses.
+      // handshake window lapses. An over-cap pending set is trimmed at
+      // issue time, so nothing lingers past its own cap either.
       const issuedAt = pendingIssuedAt.get(token)
-      if (issuedAt !== undefined && now - issuedAt < JOIN_HANDSHAKE_WINDOW_MS) {
+      if (issuedAt !== undefined && issuedAt >= 0 && now - issuedAt < JOIN_HANDSHAKE_WINDOW_MS) {
         activeTokens.add(token)
       } else {
         staleTokens.push(token)
@@ -94,14 +165,11 @@ export const proxy = async (req: NextRequest) => {
   const remaining = await redis.ttl(`meta:${roomId}`)
 
   if (staleTokens.length > 0) {
-    const cleanedConnected = connected.filter((token: string) => !staleTokens.includes(token))
     await Promise.all([
-      redis.hset(`meta:${roomId}`, {
-        connected: JSON.stringify(cleanedConnected),
-      }),
-      redis.zrem(
-        pendingKeyFor(roomId),
-        staleTokens.filter((token) => pendingIssuedAt.has(token)),
+      redis.eval(
+        SWEEP_TOKENS_SCRIPT,
+        [`meta:${roomId}`, pendingKeyFor(roomId), `users:${roomId}`, `presence:${roomId}`],
+        staleTokens,
       ),
       remaining > 0 ? redis.expire(`meta:${roomId}`, remaining) : Promise.resolve(),
     ])
@@ -122,14 +190,13 @@ export const proxy = async (req: NextRequest) => {
     sameSite: "strict",
   })
 
-  const updatedConnected = connected.filter((t: string) => !staleTokens.includes(t))
   const issuedAt = now
   await Promise.all([
-    redis.hset(`meta:${roomId}`, {
-      connected: JSON.stringify([...updatedConnected, token]),
-    }),
-    // Track the issuance so the staleness pass can spare connecting users.
-    redis.zadd(pendingKeyFor(roomId), { score: issuedAt, member: token }),
+    redis.eval(
+      ADD_TOKEN_SCRIPT,
+      [`meta:${roomId}`, pendingKeyFor(roomId)],
+      [token, String(issuedAt), String(PENDING_MAX)],
+    ),
     remaining > 0
       ? Promise.all([
           redis.expire(`meta:${roomId}`, remaining),

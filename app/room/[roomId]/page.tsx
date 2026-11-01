@@ -179,7 +179,7 @@ const Page = () => {
   const { mutate: sendMessage, isPending } = useMutation({
     mutationFn: async ({ text }: { text: string }) => {
       const res = await client.messages.post(
-        { sender: joinedUsername, text, avatar: joinedAvatar },
+        { text },
         { query: { roomId } },
       )
       return requireOk<{ success: boolean }>(res, "Message failed to send")
@@ -294,7 +294,9 @@ const Page = () => {
       toastError({
         title: isSessionStale(err)
           ? "Your invite slot expired"
-          : "Could not enter the room",
+          : isThrottled(err)
+            ? "Too many attempts"
+            : "Could not enter the room",
         description: isSessionStale(err)
           ? "Someone may have taken the slot. Refresh the page for a new one."
           : undefined,

@@ -30,24 +30,24 @@ export const chatDestroySchema = z.object({
 })
 
 export const roomIdQuerySchema = z.object({
-  roomId: z.string(),
+  // Room ids are nanoid-sized slugs; bounding the shape keeps an arbitrary
+  // string from becoming an unbounded Redis key suffix.
+  roomId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
 })
 
 /** History pagination: newest page by default, or continue below `before`. */
 export const messagesQuerySchema = z.object({
-  roomId: z.string(),
-  before: z.coerce.number().optional(),
+  roomId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+  before: z.coerce.number().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   limit: z.coerce.number().min(1).max(200).optional(),
 })
 
 export const createMessageBodySchema = z.object({
-  sender: z.string().max(100),
-  text: z.string().max(1000),
-  avatar: z.number().int().min(0).max(9).optional(),
+  text: z.string().min(1).max(1000),
 })
 
 export const editMessageBodySchema = z.object({
-  messageId: z.string(),
+  messageId: z.string().max(64),
   text: z.string().max(1000),
 })
 

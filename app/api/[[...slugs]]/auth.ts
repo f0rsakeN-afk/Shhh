@@ -9,33 +9,92 @@ class AuthError extends Error {
 }
 
 /**
- * A token-authenticated user acting on someone else's message. Ownership
- * must never surface as a 500, and scoped plugin errors do not reach the
- * parent router's error pipeline, so routes return these responses directly.
+ * Structural slice of Elysia's response context that error helpers use to
+ * set the HTTP status without owning the whole context type.
  */
-export function ownershipForbidden(): Response {
-  return response(403, "Forbidden")
+export interface SetBox {
+  status?: number | string
 }
 
-export function messageNotFound(): Response {
-  return response(404, "Message not found")
+/**
+ * Identity-bearing mutation denied: ownership must never surface as a 500,
+ * and scoped plugin errors do not reach the parent router's error pipeline,
+ * so routes return these failures directly. Every helper funnels through
+ * the same `{ error: string }` shape so Eden infers one discriminated
+ * union per route on the client.
+ */
+export function ownershipForbidden(set: SetBox) {
+  set.status = 403
+  return { error: "Forbidden" }
+}
+
+export function messageNotFound(set: SetBox) {
+  set.status = 404
+  return { error: "Message not found" }
 }
 
 /** The token is connected but has no joined identity registered. */
-export function identityUnknown(): Response {
-  return response(401, "Unauthorized")
+export function identityUnknown(set: SetBox) {
+  set.status = 401
+  return { error: "Unauthorized" }
 }
 
 /** The client hit the per-token flood window. */
-export function tooManyRequests(): Response {
-  return response(429, "Sending too fast, try again in a moment")
+export function tooManyRequests(set: SetBox) {
+  set.status = 429
+  return { error: "Sending too fast, try again in a moment" }
 }
 
-function response(status: number, error: string): Response {
-  return new Response(JSON.stringify({ error }), {
-    status,
-    headers: { "content-type": "application/json" },
-  })
+/** A mutation carried no useful content after sanitization. */
+export function emptyMessage(set: SetBox) {
+  set.status = 422
+  return { error: "Message is empty" }
+}
+
+/** A join attempt with a blank or all-symbols name. */
+export function emptyUsername(set: SetBox) {
+  set.status = 422
+  return { error: "Pick a non-empty name" }
+}
+
+/** The room already holds its maximum number of joined participants. */
+export function roomFull(set: SetBox) {
+  set.status = 403
+  return { error: "Room is full" }
+}
+
+/** Another participant in this room already uses this name. */
+export function nameTaken(set: SetBox) {
+  set.status = 409
+  return { error: "That name is already taken in this room" }
+}
+
+/**
+ * Fixed-window flood counter keyed on the auth token. The expiry is only
+ * stamped when the counter is created, so the window opens with the first
+ * hit and a steady user just under the cap is never penalized forever.
+ * Returns false when the caller exceeds `max` hits per window.
+ */
+export async function floodGate(
+  roomId: string,
+  token: string,
+  bucket: string,
+  max: number,
+  windowSeconds: number,
+): Promise<boolean> {
+  const floodKey = `flood:${roomId}:${bucket}:${token}`
+
+  const pipeline = redis.pipeline()
+  pipeline.incr(floodKey)
+  pipeline.ttl(floodKey)
+  const pipelineResult = (await pipeline.exec()) as number[] | null
+  const [hitCount, windowTtl] = pipelineResult ?? []
+
+  if ((windowTtl ?? 0) <= 0) {
+    await redis.expire(floodKey, windowSeconds)
+  }
+
+  return (hitCount ?? 0) <= max
 }
 
 export const authMiddleware = new Elysia({ name: "auth" })
@@ -58,6 +117,12 @@ export const authMiddleware = new Elysia({ name: "auth" })
 
     if (!roomId || !token) {
       throw new AuthError("Missing roomId or token.")
+    }
+
+    // Room ids are short slugs; anything longer or oddly shaped is not a
+    // room and must not become an unbounded Redis key suffix.
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(roomId)) {
+      throw new AuthError("Malformed roomId")
     }
 
     const connectedRaw = await redis.hget<string | string[]>(`meta:${roomId}`, "connected")

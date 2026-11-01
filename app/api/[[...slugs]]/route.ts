@@ -7,6 +7,11 @@ import {
   messageNotFound,
   ownershipForbidden,
   tooManyRequests,
+  emptyMessage,
+  emptyUsername,
+  roomFull,
+  nameTaken,
+  floodGate,
 } from "./auth"
 import { realtime } from "@/lib/realtime"
 import {
@@ -20,6 +25,18 @@ import {
 } from "@/lib/schemas"
 import { MAX_ROOM_PARTICIPANTS, ROOM_TTL_SECONDS, pendingKeyFor } from "@/lib/room"
 import { sanitizeText, sanitizeUsername } from "@/lib/sanitize"
+
+/**
+ * Uniform error body shared by every failure path, so Eden infers a single
+ * `{ error: string }` shape for all non-2xx statuses on the client.
+ */
+const errorBody = t.Object({ error: t.String() })
+
+/** Declared failures for token-gated routes; success schemas are per route. */
+const authedErrors = {
+  401: errorBody,
+  429: errorBody,
+}
 
 // Message model: a HASH gives O(1) point reads/writes per message id (used
 // by reactions, receipts, edits and deletes) and a ZSET keeps the transcript
@@ -63,8 +80,35 @@ async function retainRoomTtl(roomId: string, keys: string[]): Promise<void> {
   }
 }
 
+// Coarse sliding-window memory of room creations per caller IP, for the
+// flood guard below. In-memory is enough at this app's scale.
+const recentCreations = new Map<string, number[]>()
+
 const rooms = new Elysia({ prefix: "/room" })
-  .post("/create", async () => {
+  .post("/create", async ({ request, set }) => {
+    const ip =
+      (request.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() ||
+      "local"
+    const now = Date.now()
+    const WINDOW_MS = 60_000
+    const WINDOW_MAX = 5
+
+    const hits = (recentCreations.get(ip) ?? []).filter(
+      (t) => now - t < WINDOW_MS,
+    )
+    if (hits.length >= WINDOW_MAX) {
+      return tooManyRequests(set)
+    }
+    hits.push(now)
+    recentCreations.set(ip, hits)
+    if (recentCreations.size > 500) {
+      for (const [ip, times] of recentCreations) {
+        if (!times.some((t) => now - t < WINDOW_MS)) {
+          recentCreations.delete(ip)
+        }
+      }
+    }
+
     const roomId = nanoid()
 
     await redis.hset(`meta:${roomId}`, {
@@ -75,7 +119,10 @@ const rooms = new Elysia({ prefix: "/room" })
     await redis.expire(`meta:${roomId}`, ROOM_TTL_SECONDS)
 
     return { roomId }
-  })
+  },
+    {
+      response: { ...authedErrors, 200: t.Object({ roomId: t.String() }) },
+    })
   .get(
     "/check",
     async ({ query }) => {
@@ -137,13 +184,18 @@ const rooms = new Elysia({ prefix: "/room" })
         ttl: ttlNumber > 0 ? ttlNumber : 0 
       }
     },
-    { query: roomIdQuerySchema }
+    {
+      query: roomIdQuerySchema,
+      response: {
+        200: t.Object({ exists: t.Boolean(), isFull: t.Boolean(), ttl: t.Number() }),
+      },
+    }
   )
   .use(authMiddleware)
   .post(
     "/join",
-    async ({ body, auth }) => {
-      const username = sanitizeUsername(body.username)
+    async ({ body, auth, set }) => {
+      const username = sanitizeUsername(body.username).slice(0, 24)
       const { roomId, token } = auth
       const avatar =
         typeof body.avatar === "number" &&
@@ -153,13 +205,38 @@ const rooms = new Elysia({ prefix: "/room" })
           ? body.avatar
           : undefined
 
+      if (!username || username.trim().length === 0) {
+        return emptyUsername(set)
+      }
+
+      // One atomic decision: capacity (joined participants, not page loads),
+      // re-join passthrough, and username uniqueness, so two parallel joins
+      // cannot both squeeze a colliding name in.
+      const decision = await redis.eval<unknown[], number>(
+        `local exists = redis.call('HEXISTS', KEYS[1], ARGV[1])
+if exists == 1 then return 1 end
+if tonumber(redis.call('HLEN', KEYS[1])) >= tonumber(ARGV[2]) then return 0 end
+local vals = redis.call('HVALS', KEYS[1])
+for _, v in ipairs(vals) do
+  local ok, name = pcall(function() return cjson.decode(v).username end)
+  if ok and name == ARGV[3] then return -1 end
+end
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[4])
+return 1`,
+        [`users:${roomId}`],
+        [token, String(MAX_ROOM_PARTICIPANTS), username, JSON.stringify({ username, avatar })],
+      )
+
+      if (decision === 0) {
+        return roomFull(set)
+      }
+      if (decision === -1) {
+        return nameTaken(set)
+      }
+
       const remaining = await redis.ttl(`meta:${roomId}`)
 
       await Promise.all([
-        redis.hset(`users:${roomId}`, {
-          [token]: JSON.stringify({ username, avatar }),
-        }),
-        // The token finished its join handshake; drop its pending marker.
         redis.zrem(pendingKeyFor(roomId), token),
         remaining > 0 ? redis.expire(`users:${roomId}`, remaining) : Promise.resolve(),
         realtime.channel(roomId).emit("chat.connection", {
@@ -175,9 +252,15 @@ const rooms = new Elysia({ prefix: "/room" })
     {
       query: roomIdQuerySchema,
       body: t.Object({
-        username: t.String({ maxLength: 100 }),
+        username: t.String({ minLength: 1, maxLength: 24 }),
         avatar: t.Optional(t.Integer({ minimum: 0, maximum: 9 })),
       }),
+      response: {
+        ...authedErrors,
+        200: t.Object({ success: t.Literal(true) }),
+        403: errorBody,
+        409: errorBody,
+      },
     }
   )
   .get(
@@ -186,7 +269,10 @@ const rooms = new Elysia({ prefix: "/room" })
       const ttl = await redis.ttl(`meta:${auth.roomId}`)
       return { ttl: ttl > 0 ? ttl : 0 }
     },
-    { query: roomIdQuerySchema }
+    {
+      query: roomIdQuerySchema,
+      response: { ...authedErrors, 200: t.Object({ ttl: t.Number() }) },
+    }
   )
   .delete(
     "/",
@@ -205,55 +291,44 @@ const rooms = new Elysia({ prefix: "/room" })
       ]
 
       await Promise.all(keysToDelete.map((key) => redis.del(key)))
+      return { success: true }
     },
-    { query: roomIdQuerySchema }
+    {
+      query: roomIdQuerySchema,
+      response: { ...authedErrors, 200: t.Object({ success: t.Literal(true) }) },
+    }
   )
 
 const messages = new Elysia({ prefix: "/messages" })
   .use(authMiddleware)
   .post(
     "/",
-    async ({ body, auth }) => {
-      const sender = sanitizeUsername(body.sender)
+    async ({ body, auth, set }) => {
+      // Identity is server-only: the body's historical sender/avatar fields
+      // were removed, so a client cannot post as another participant.
+      const username = auth.user?.username
+      if (!username) {
+        return identityUnknown(set)
+      }
       const text = sanitizeText(body.text)
-      const avatar =
-        typeof body.avatar === "number" &&
-        Number.isInteger(body.avatar) &&
-        body.avatar >= 0 &&
-        body.avatar <= 9
-          ? body.avatar
-          : undefined
+      if (!text) {
+        return emptyMessage(set)
+      }
       const { roomId } = auth
 
       // Flood control: a fixed window keyed on the auth token, so a runaway
-      // or malicious client cannot blanket Redis with messages. The expiry
-      // is only set when the counter is created, meaning the window starts
-      // on the first message and legitimately rapid steady typers are not
-      // penalized indefinitely.
-      const RATE_WINDOW_SECONDS = 5
-      const RATE_MAX_MESSAGES = 8
-      const floodKey = `flood:${roomId}:${auth.token}`
-
-      const pipeline = redis.pipeline()
-      pipeline.incr(floodKey)
-      pipeline.ttl(floodKey)
-      const pipelineResult = (await pipeline.exec()) as number[] | null
-      const [floodCount, floodTtl] = pipelineResult ?? []
-
-      if ((floodTtl ?? 0) <= 0) {
-        await redis.expire(floodKey, RATE_WINDOW_SECONDS)
-      }
-      if ((floodCount ?? 0) > RATE_MAX_MESSAGES) {
-        return tooManyRequests()
+      // or malicious client cannot blanket Redis with messages.
+      if (!(await floodGate(roomId, auth.token, "msg", 8, 5))) {
+        return tooManyRequests(set)
       }
 
       const message: Message = {
         id: nanoid(),
-        sender,
+        sender: username,
         text,
         timestamp: Date.now(),
         roomId,
-        avatar,
+        avatar: auth.user?.avatar,
       }
 
       // HASH for O(1) point access, ZSET for timestamp ordering: reactions,
@@ -276,26 +351,31 @@ const messages = new Elysia({ prefix: "/messages" })
     {
       query: roomIdQuerySchema,
       body: createMessageBodySchema,
+      response: {
+        ...authedErrors,
+        200: t.Object({ success: t.Literal(true) }),
+        422: errorBody,
+      },
     }
   )
   .post(
     "/edit",
-    async ({ body, auth }) => {
+    async ({ body, auth, set }) => {
       const { messageId, text } = body
       const { roomId, token } = auth
 
       const message = await readMessage(roomId, messageId)
       if (!message) {
-        return messageNotFound()
+        return messageNotFound(set)
       }
 
       if (message.token !== token) {
         // Explicit 403 response: scoped plugin errors do not reach this
         // router's error pipeline, and ownership must never surface as a 500.
-        return ownershipForbidden()
+        return ownershipForbidden(set)
       }
       if (message.deleted) {
-        return messageNotFound()
+        return messageNotFound(set)
       }
 
       const updatedMessage = { ...message, text: sanitizeText(text), edited: true }
@@ -315,6 +395,12 @@ const messages = new Elysia({ prefix: "/messages" })
     {
       query: roomIdQuerySchema,
       body: editMessageBodySchema,
+      response: {
+        ...authedErrors,
+        200: t.Object({ success: t.Literal(true) }),
+        403: errorBody,
+        404: errorBody,
+      },
     }
   )
   .get(
@@ -360,11 +446,20 @@ const messages = new Elysia({ prefix: "/messages" })
 
       return { messages, hasMore }
     },
-    { query: messagesQuerySchema }
+    {
+      query: messagesQuerySchema,
+      response: {
+        ...authedErrors,
+        200: t.Object({
+          messages: t.Array(t.Unknown()),
+          hasMore: t.Boolean(),
+        }),
+      },
+    }
   )
   .post(
     "/reaction",
-    async ({ body, auth }) => {
+    async ({ body, auth, set }) => {
       const { messageId, emoji, action } = body
       const { roomId, user } = auth
 
@@ -373,12 +468,19 @@ const messages = new Elysia({ prefix: "/messages" })
       // reaction and cannot touch other people's.
       const username = user?.username
       if (!username) {
-        return identityUnknown()
+        return identityUnknown(set)
+      }
+
+      // Reactions are O(1) writes that also bloom the message JSON; a
+      // scripted client hammering this endpoint needs the same containment
+      // messages have.
+      if (!(await floodGate(roomId, auth.token, "react", 12, 5))) {
+        return tooManyRequests(set)
       }
 
       const message = await readMessage(roomId, messageId)
       if (!message) {
-        return messageNotFound()
+        return messageNotFound(set)
       }
 
       // Invariant: one reaction per user per message. "add" replaces any
@@ -407,15 +509,23 @@ const messages = new Elysia({ prefix: "/messages" })
     {
       query: roomIdQuerySchema,
       body: t.Object({
-        messageId: t.String(),
-        emoji: t.String(),
+        messageId: t.String({ maxLength: 64 }),
+        // A reaction chip is a grapheme cluster; anything past this is
+        // payload stuffing, not an emoji.
+        emoji: t.String({ minLength: 1, maxLength: 16 }),
         action: t.Union([t.Literal("add"), t.Literal("remove")]),
       }),
+      response: {
+        ...authedErrors,
+        200: t.Object({ success: t.Literal(true) }),
+        404: errorBody,
+        422: errorBody,
+      },
     }
   )
   .post(
     "/read",
-    async ({ body, auth }) => {
+    async ({ body, auth, set }) => {
       const { messageId } = body
       const { roomId, user } = auth
       // Receipts are attributed to the token's identity; a body username is
@@ -427,7 +537,7 @@ const messages = new Elysia({ prefix: "/messages" })
 
       const message = await readMessage(roomId, messageId)
       if (!message) {
-        return messageNotFound()
+        return messageNotFound(set)
       }
 
       const readBy = message.readBy || []
@@ -449,25 +559,30 @@ const messages = new Elysia({ prefix: "/messages" })
     {
       query: roomIdQuerySchema,
       body: t.Object({
-        messageId: t.String(),
+        messageId: t.String({ maxLength: 64 }),
       }),
+      response: {
+        ...authedErrors,
+        200: t.Object({ success: t.Literal(true) }),
+        404: errorBody,
+      },
     }
   )
   .delete(
     "/",
-    async ({ query, auth }) => {
+    async ({ query, auth, set }) => {
       const { messageId } = query
       const { roomId, token } = auth
 
       const message = await readMessage(roomId, messageId)
       if (!message) {
-        return messageNotFound()
+        return messageNotFound(set)
       }
 
       if (message.token !== token) {
         // Explicit 403 response: scoped plugin errors do not reach this
         // router's error pipeline, and ownership must never surface as a 500.
-        return ownershipForbidden()
+        return ownershipForbidden(set)
       }
 
       const deletedMessage = { ...message, deleted: true, text: "" }
@@ -487,8 +602,14 @@ const messages = new Elysia({ prefix: "/messages" })
     {
       query: t.Object({
         roomId: t.String(),
-        messageId: t.String(),
+        messageId: t.String({ maxLength: 64 }),
       }),
+      response: {
+        ...authedErrors,
+        200: t.Object({ success: t.Literal(true) }),
+        403: errorBody,
+        404: errorBody,
+      },
     }
   )
 
@@ -507,12 +628,18 @@ const presence = new Elysia({ prefix: "/presence" })
         username,
         isTyping,
       })
+
+      return { success: true }
     },
     {
       query: roomIdQuerySchema,
       body: t.Object({
         isTyping: t.Boolean(),
       }),
+      response: {
+        ...authedErrors,
+        200: t.Object({ success: t.Literal(true) }),
+      },
     }
   )
   .post(
@@ -544,6 +671,13 @@ const presence = new Elysia({ prefix: "/presence" })
     },
     {
       query: roomIdQuerySchema,
+      response: {
+        ...authedErrors,
+        200: t.Union([
+          t.Object({ success: t.Literal(true), ttl: t.Number() }),
+          t.Object({ success: t.Literal(true) }),
+        ]),
+      },
     }
   )
   .get(
@@ -582,7 +716,22 @@ const presence = new Elysia({ prefix: "/presence" })
 
       return { users }
     },
-    { query: roomIdQuerySchema }
+    {
+      query: roomIdQuerySchema,
+      response: {
+        ...authedErrors,
+        200: t.Object({
+          users: t.Array(
+            t.Object({
+              username: t.String(),
+              status: t.Union([t.Literal("online"), t.Literal("offline")]),
+              lastSeen: t.Number(),
+              avatar: t.Optional(t.Number()),
+            }),
+          ),
+        }),
+      },
+    }
   )
 
 const app = new Elysia({ prefix: "/api" }).use(rooms).use(messages).use(presence)
