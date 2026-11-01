@@ -196,10 +196,8 @@ const rooms = new Elysia({ prefix: "/room" })
 
       const keysToDelete = [
         `meta:${roomId}`,
-        `messages:${roomId}`,
         `users:${roomId}`,
         `presence:${roomId}`,
-        `history:${roomId}`,
         pendingKeyFor(roomId),
         msgKeyFor(roomId),
         msgOrderKeyFor(roomId),
