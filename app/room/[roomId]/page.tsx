@@ -59,12 +59,16 @@ const Page = () => {
   const typingDebounceRef = useRef<NodeJS.Timeout | undefined>(undefined)
   const autoCopiedRef = useRef(false)
 
+  // The timer is seeded once at join and then server-locked by the heartbeat
+  // (which returns the room TTL every 30s), so no focus or interval refetch.
   const { data: ttlData } = useQuery({
     queryKey: ["ttl", roomId],
     queryFn: async () => {
       const res = await client.room.ttl.get({ query: { roomId } })
       return requireOk<{ ttl: number }>(res, "Could not load the room timer")
     },
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
   })
 
   const queryClient = useQueryClient()
@@ -303,8 +307,18 @@ const Page = () => {
 
   const { mutate: sendHeartbeat } = useMutation({
     mutationFn: async () => {
-      // Identity comes from the auth cookie server-side now.
-      await client.presence.heartbeat.post(null, { query: { roomId } })
+      // Identity comes from the auth cookie server-side now. Deliberately
+      // quiet: a transient heartbeat failure must not toast on a 30s poll,
+      // presence-visible status recovers with the next beat.
+      const res = await client.presence.heartbeat.post(null, { query: { roomId } })
+      return res.data && "ttl" in res.data ? res.data.ttl : undefined
+    },
+    // The heartbeat already carries the room TTL; feeding it to the timer
+    // cache keeps the countdown server-locked for free.
+    onSuccess: (ttl) => {
+      if (typeof ttl === "number") {
+        queryClient.setQueryData<{ ttl: number }>(["ttl", roomId], { ttl })
+      }
     },
   })
 

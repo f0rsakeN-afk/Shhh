@@ -503,9 +503,10 @@ const presence = new Elysia({ prefix: "/presence" })
       }
 
       const now = Date.now()
-      
+      // Read once; the same value returns to the client so the countdown
+      // there stays server-locked without a second polling endpoint.
       const remaining = await redis.ttl(`meta:${auth.roomId}`)
-      
+
       await Promise.all([
         redis.hset(`presence:${auth.roomId}`, {
           [auth.token]: JSON.stringify({ username, lastSeen: now }),
@@ -517,6 +518,8 @@ const presence = new Elysia({ prefix: "/presence" })
           lastSeen: now,
         }),
       ])
+
+      return { success: true, ttl: remaining > 0 ? remaining : 0 }
     },
     {
       query: roomIdQuerySchema,
