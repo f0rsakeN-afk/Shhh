@@ -33,6 +33,13 @@ export const roomIdQuerySchema = z.object({
   roomId: z.string(),
 })
 
+/** History pagination: newest page by default, or continue below `before`. */
+export const messagesQuerySchema = z.object({
+  roomId: z.string(),
+  before: z.coerce.number().optional(),
+  limit: z.coerce.number().min(1).max(200).optional(),
+})
+
 export const createMessageBodySchema = z.object({
   sender: z.string().max(100),
   text: z.string().max(1000),

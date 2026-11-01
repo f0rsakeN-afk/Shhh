@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
-import { MessageCircle, SearchX } from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { ChevronUp, MessageCircle, SearchX } from "lucide-react"
 import { format } from "date-fns"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
@@ -24,6 +24,11 @@ interface MessageListProps {
   onEdit?: (messageId: string) => void
   /** Shown while search filtering hides most messages. */
   emptyNotice?: string | null
+  /** Whether older pages are still available above the rendered history. */
+  hasEarlierMessages?: boolean
+  /** Prepends the previous hour's page; the list keeps the scroll anchor. */
+  onLoadEarlier?: () => void
+  isEarlierLoading?: boolean
 }
 
 /** Human day label for separators: "Today" / "Yesterday" / "March 4". */
@@ -47,11 +52,38 @@ export function MessageList({
   onDelete,
   onEdit,
   emptyNotice = null,
+  hasEarlierMessages = false,
+  onLoadEarlier,
+  isEarlierLoading = false,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const readMessagesRef = useRef<Set<string>>(new Set())
   const [animatedMessages, setAnimatedMessages] = useState<Set<string>>(new Set())
+
+  // Captured when "Load earlier" is pressed, consumed after the prepend
+  // renders so the viewport stays anchored on what the user was reading.
+  const prependAnchorRef = useRef<{
+    firstId: string
+    scrollTop: number
+    scrollHeight: number
+  } | null>(null)
+  const lastMessageIdRef = useRef<string | undefined>(undefined)
+
+  const handleLoadEarlier = useCallback(() => {
+    const viewport = containerRef.current?.querySelector(
+      '[data-slot="scroll-area-viewport"]',
+    ) as HTMLElement | null
+    const firstId = messages[0]?.id
+    if (viewport && firstId !== undefined) {
+      prependAnchorRef.current = {
+        firstId,
+        scrollTop: viewport.scrollTop,
+        scrollHeight: viewport.scrollHeight,
+      }
+    }
+    onLoadEarlier?.()
+  }, [messages, onLoadEarlier])
 
   useEffect(() => {
     const newMessages = messages.filter((msg) => !animatedMessages.has(msg.id))
@@ -69,6 +101,9 @@ export function MessageList({
     }
   }, [messages, animatedMessages])
 
+  // Scroll choreography: a PREPEND keeps the reading anchor, an APPEND (new
+  // messages from realtime or optimistic send) sinks the viewport to the
+  // newest content, and the first mount just lands at the bottom.
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -76,16 +111,30 @@ export function MessageList({
     const viewport = container.querySelector(
       '[data-slot="scroll-area-viewport"]',
     ) as HTMLElement | null
+    if (!viewport) return
 
-    if (viewport) {
-      requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const anchor = prependAnchorRef.current
+      const oldestRenderedId = messages[0]?.id
+
+      if (anchor && oldestRenderedId !== anchor.firstId) {
+        prependAnchorRef.current = null
+        viewport.scrollTop =
+          viewport.scrollHeight - anchor.scrollHeight + anchor.scrollTop
+        return
+      }
+
+      const lastMessageId = messages.at(-1)?.id
+      if (lastMessageId !== undefined && lastMessageId !== lastMessageIdRef.current) {
         viewport.scrollTo({
           top: viewport.scrollHeight,
-          behavior: "smooth",
+          behavior: lastMessageIdRef.current === undefined ? "auto" : "smooth",
         })
-      })
-    }
-  }, [messages.length])
+      }
+
+      lastMessageIdRef.current = lastMessageId
+    })
+  }, [messages])
 
   useEffect(() => {
     if (!onMessageRead || !otherUsername) return
@@ -123,6 +172,21 @@ export function MessageList({
           aria-relevant="additions text"
           className="space-y-5 px-3 py-5 sm:px-6 sm:py-6"
         >
+          {hasEarlierMessages && (
+            <div className="flex items-center gap-3 pb-2">
+              <span className="h-px flex-1 bg-line" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={handleLoadEarlier}
+                disabled={isEarlierLoading}
+                className="flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <ChevronUp className="size-3" strokeWidth={2} aria-hidden="true" />
+                {isEarlierLoading ? "Loading" : "Load earlier"}
+              </button>
+              <span className="h-px flex-1 bg-line" aria-hidden="true" />
+            </div>
+          )}
           {messages.length === 0 && (
             <div className="flex min-h-[320px] items-center justify-center sm:min-h-[420px]">
               <Empty className="border border-dashed border-line bg-card">

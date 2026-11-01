@@ -10,6 +10,7 @@ import {
 import { realtime } from "@/lib/realtime"
 import {
   roomIdQuerySchema,
+  messagesQuerySchema,
   createMessageBodySchema,
   editMessageBodySchema,
   type Message,
@@ -297,33 +298,48 @@ const messages = new Elysia({ prefix: "/messages" })
   )
   .get(
     "/",
-    async ({ auth }) => {
+    async ({ auth, query }) => {
       const { roomId, token } = auth
+      const { before, limit } = query
+      const pageSize = limit ?? 100
 
-      // Ordered ids, then one multi-fetch for the payloads: two Redis calls
-      // per history load regardless of transcript size.
-      const ids = await redis.zrange<string[]>(msgOrderKeyFor(roomId), 0, -1)
-      if (ids.length === 0) {
-        return { messages: [] }
+      // Newest-first page of ids: from the exclusive cursor when paging
+      // back, or the top of the transcript for the initial load.
+      const start: `(${number}` | "+inf" =
+        before !== undefined ? `(${before}` : "+inf"
+      const ids = await redis.zrange<string[]>(
+        msgOrderKeyFor(roomId),
+        start,
+        "-inf",
+        { byScore: true, rev: true, offset: 0, count: pageSize + 1 },
+      )
+
+      const hasMore = ids.length > pageSize
+      const pageIds = ids.slice(0, pageSize)
+
+      if (pageIds.length === 0) {
+        return { messages: [], hasMore }
       }
 
       const stored = await redis.hmget<Record<string, StoredMessage>>(
         msgKeyFor(roomId),
-        ...(ids as string[]),
+        ...(pageIds as string[]),
       )
 
       const byId = new Map(Object.entries(stored ?? {}))
-      const messages = ids
+      const messages = pageIds
         .map((id) => parseStoredMessage((byId.get(id) ?? null) as StoredMessage))
         .filter((message): message is Message => message !== null)
         .map((message) => ({
           ...message,
           token: message.token === token ? token : undefined,
         }))
+        // The page walks newest-first; the transcript renders oldest-first.
+        .reverse()
 
-      return { messages }
+      return { messages, hasMore }
     },
-    { query: roomIdQuerySchema }
+    { query: messagesQuerySchema }
   )
   .post(
     "/reaction",

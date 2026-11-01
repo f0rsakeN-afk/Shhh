@@ -28,6 +28,12 @@ import { notifyIfHidden } from "@/lib/notify"
 import { cn } from "@/lib/utils"
 import type { Message } from "@/lib/schemas"
 
+/** What GET /messages returns; every setQueryData update must keep `hasMore`. */
+interface MessageHistory {
+  messages: Message[]
+  hasMore: boolean
+}
+
 const JOINED_STORAGE_KEY = (roomId: string) => `joined_${roomId}`
 
 const searchInputClasses =
@@ -62,10 +68,44 @@ const Page = () => {
   })
 
   const queryClient = useQueryClient()
+
+  const cleanupRoom = useCallback(() => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(JOINED_STORAGE_KEY(roomId))
+      // The name/avatar selectors persist so a mid-session refresh does not
+      // force a re-join; once the room is intentionally left or destroyed,
+      // both selections go with it.
+      localStorage.removeItem(`selected_name_${roomId}`)
+      localStorage.removeItem(`selected_avatar_${roomId}`)
+    }
+
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current)
+      heartbeatIntervalRef.current = undefined
+    }
+
+    if (typingDebounceRef.current) {
+      clearTimeout(typingDebounceRef.current)
+      typingDebounceRef.current = undefined
+    }
+
+    queryClient.removeQueries({ queryKey: ["messages", roomId] })
+    queryClient.removeQueries({ queryKey: ["presence", roomId] })
+    queryClient.removeQueries({ queryKey: ["ttl", roomId] })
+
+    setTypingUsers([])
+    setRealtimePresence(null)
+    setConnectionNotification(null)
+    setEditing(null)
+    setHasJoined(false)
+  }, [roomId, queryClient])
+
+  // Recent tail of the transcript; older pages are user-fetched and kept in
+  // local state so prepend-anchor scrolling never re-triggers a query.
   const { data: messages } = useQuery({
     queryKey: ["messages", roomId],
     queryFn: async () => {
-      const res = await client.messages.get({ query: { roomId } })
+      const res = await client.messages.get({ query: { roomId, limit: 100 } })
 
       // A history read can 401 when the proxy has recycled our token; drop
       // back to the join screen (fresh token is issued on the next load).
@@ -74,9 +114,63 @@ const Page = () => {
         return undefined
       }
 
-      return requireOk<{ messages: Message[] | undefined }>(res, "Could not load messages")
+      return requireOk<{ messages: Message[]; hasMore: boolean }>(res, "Could not load messages")
     },
   })
+
+  const [olderMessages, setOlderMessages] = useState<Message[]>([])
+  // Tri-state: null means "never paged, defer to the recent tail's hasMore";
+  // once a real page comes back its result is authoritative, so the button
+  // hides cleanly instead of flapping between server and cached truth.
+  const [hasOlderMessages, setHasOlderMessages] = useState<boolean | null>(null)
+  const [isEarlierLoading, setIsEarlierLoading] = useState(false)
+
+  const loadEarlierMessages = useCallback(async () => {
+    if (isEarlierLoading) return
+    setIsEarlierLoading(true)
+
+    try {
+      const cursorMessages = messages?.messages ?? []
+      const oldestTimestamp = olderMessages[0]?.timestamp ?? cursorMessages[0]?.timestamp
+      if (oldestTimestamp === undefined) {
+        setHasOlderMessages(false)
+        return
+      }
+
+      const res = await client.messages.get({
+        query: { roomId, limit: 100, before: oldestTimestamp },
+      })
+
+      // A history read can 401 when the proxy has recycled our token; drop
+      // back to the join screen (fresh token is issued on the next load).
+      if (res.error && res.status === 401) {
+        cleanupRoom()
+        return
+      }
+
+      const page = requireOk<{ messages: Message[]; hasMore: boolean }>(
+        res,
+        "Could not load earlier messages",
+      )
+
+      setOlderMessages((prev) => {
+        const seen = new Set(prev.map((message) => message.id))
+        // Pages walk newest-first; the transcript is oldest-first.
+        const pageOldestFirst = page.messages.filter(
+          (message) => !seen.has(message.id),
+        )
+        return [...pageOldestFirst, ...prev]
+      })
+      setHasOlderMessages(page.hasMore)
+    } catch {
+      toastError({
+        title: "Could not load earlier messages",
+        description: "Try again in a moment.",
+      })
+    } finally {
+      setIsEarlierLoading(false)
+    }
+  }, [isEarlierLoading, olderMessages, messages, roomId, cleanupRoom])
 
   const { mutate: sendMessage, isPending } = useMutation({
     mutationFn: async ({ text }: { text: string }) => {
@@ -100,9 +194,9 @@ const Page = () => {
         token: "current",
       }
 
-      queryClient.setQueryData<{ messages: Message[] }>(["messages", roomId], (old) => {
-        if (!old?.messages) return { messages: [optimisticMessage] }
-        return { messages: [...old.messages, optimisticMessage] }
+      queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
+        if (!old?.messages) return { messages: [optimisticMessage], hasMore: false }
+        return { messages: [...old.messages, optimisticMessage], hasMore: old.hasMore }
       })
 
       return { previousMessages }
@@ -145,48 +239,18 @@ const Page = () => {
       })
     },
     onSuccess: (_, { messageId, text }) => {
-      queryClient.setQueryData<{ messages: Message[] }>(["messages", roomId], (old) => {
+      queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
         if (!old?.messages) return old
         return {
           messages: old.messages.map((msg) =>
             msg.id === messageId ? { ...msg, text, edited: true } : msg,
           ),
+          hasMore: old.hasMore,
         }
       })
       setEditing(null)
     },
   })
-
-  const cleanupRoom = useCallback(() => {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem(JOINED_STORAGE_KEY(roomId))
-      // The name/avatar selectors persist so a mid-session refresh does not
-      // force a re-join; once the room is intentionally left or destroyed,
-      // both selections go with it.
-      localStorage.removeItem(`selected_name_${roomId}`)
-      localStorage.removeItem(`selected_avatar_${roomId}`)
-    }
-
-    if (heartbeatIntervalRef.current) {
-      clearInterval(heartbeatIntervalRef.current)
-      heartbeatIntervalRef.current = undefined
-    }
-
-    if (typingDebounceRef.current) {
-      clearTimeout(typingDebounceRef.current)
-      typingDebounceRef.current = undefined
-    }
-
-    queryClient.removeQueries({ queryKey: ["messages", roomId] })
-    queryClient.removeQueries({ queryKey: ["presence", roomId] })
-    queryClient.removeQueries({ queryKey: ["ttl", roomId] })
-
-    setTypingUsers([])
-    setRealtimePresence(null)
-    setConnectionNotification(null)
-    setEditing(null)
-    setHasJoined(false)
-  }, [roomId, queryClient])
 
   const { mutate: destroyRoom } = useMutation({
     mutationFn: async () => {
@@ -254,9 +318,9 @@ const Page = () => {
     // so a lost update is a briefly-mirrored chip instead of a broken one.
     onMutate: async ({ messageId, emoji, action }) => {
       await queryClient.cancelQueries({ queryKey: ["messages", roomId] })
-      const previous = queryClient.getQueryData<{ messages: Message[] }>(["messages", roomId])
+      const previous = queryClient.getQueryData<MessageHistory>(["messages", roomId])
 
-      queryClient.setQueryData<{ messages: Message[] }>(["messages", roomId], (old) => {
+      queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
         if (!old?.messages) return old
         return {
           messages: old.messages.map((msg) => {
@@ -272,6 +336,7 @@ const Page = () => {
                 : withoutMine
             return { ...msg, reactions }
           }),
+          hasMore: old.hasMore,
         }
       })
 
@@ -296,7 +361,7 @@ const Page = () => {
       await client.messages.read.post({ messageId }, { query: { roomId } })
     },
     onSuccess: (_, messageId) => {
-      queryClient.setQueryData<{ messages: Message[] }>(["messages", roomId], (old) => {
+      queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
         if (!old?.messages) return old
         return {
           messages: old.messages.map((msg) => {
@@ -311,6 +376,7 @@ const Page = () => {
             }
             return msg
           }),
+          hasMore: old.hasMore,
         }
       })
     },
@@ -330,12 +396,13 @@ const Page = () => {
       })
     },
     onSuccess: (_, messageId) => {
-      queryClient.setQueryData<{ messages: Message[] }>(["messages", roomId], (old) => {
+      queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
         if (!old?.messages) return old
         return {
           messages: old.messages.map((msg) =>
             msg.id === messageId ? { ...msg, deleted: true, text: "" } : msg,
           ),
+          hasMore: old.hasMore,
         }
       })
       setEditing((current) => (current?.id === messageId ? null : current))
@@ -468,10 +535,15 @@ const Page = () => {
   }, [joinedUsername, presenceData])
 
   // Stable array identity even while the query is loading, so downstream
-  // hooks (filtering, search, edit lookup) do not re-run per render.
+  // hooks (filtering, search, edit lookup) do not re-run per render. Older
+  // prepended pages merge in front of the recent tail.
   const allMessages = useMemo(
-    () => messages?.messages ?? [],
-    [messages?.messages],
+    () => [...olderMessages, ...(messages?.messages ?? [])],
+    [olderMessages, messages?.messages],
+  )
+  const hasEarlierMessages = useMemo(
+    () => hasOlderMessages ?? Boolean(messages?.hasMore),
+    [hasOlderMessages, messages?.hasMore],
   )
 
   const filteredMessages = useMemo(() => {
@@ -515,7 +587,7 @@ const Page = () => {
           notifyIfHidden(data.sender, data.text)
         }
 
-        queryClient.setQueryData<{ messages: Message[] }>(["messages", roomId], (old) => {
+        queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
           if (!old?.messages) return old
 
           const messageWithToken: Message = { ...data, token: data.sender === joinedUsername ? "current" : undefined }
@@ -528,7 +600,7 @@ const Page = () => {
             if (existingIndex !== -1) {
               const updatedMessages = [...old.messages]
               updatedMessages[existingIndex] = messageWithToken
-              return { messages: updatedMessages }
+              return { messages: updatedMessages, hasMore: old.hasMore }
             }
           }
 
@@ -542,6 +614,7 @@ const Page = () => {
 
           return {
             messages: [...old.messages, messageWithToken],
+            hasMore: old.hasMore,
           }
         })
       }
@@ -553,7 +626,7 @@ const Page = () => {
       }
 
       if (event === "chat.edited") {
-        queryClient.setQueryData<{ messages: Message[] }>(["messages", roomId], (old) => {
+        queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
           if (!old?.messages) return old
           return {
             messages: old.messages.map((msg) =>
@@ -561,6 +634,7 @@ const Page = () => {
                 ? { ...msg, text: data.text, edited: true }
                 : msg,
             ),
+            hasMore: old.hasMore,
           }
         })
       }
@@ -568,7 +642,7 @@ const Page = () => {
       if (event === "chat.reaction") {
         // Server-authoritative full state: assign, never merge, so every
         // client converges even under racing clicks.
-        queryClient.setQueryData<{ messages: Message[] }>(["messages", roomId], (old) => {
+        queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
           if (!old?.messages) return old
           return {
             messages: old.messages.map((msg) =>
@@ -576,6 +650,7 @@ const Page = () => {
                 ? { ...msg, reactions: data.reactions }
                 : msg,
             ),
+            hasMore: old.hasMore,
           }
         })
       }
@@ -867,6 +942,9 @@ const Page = () => {
             onDelete={handleDeleteMessage}
             onEdit={handleStartEdit}
             emptyNotice={searchNotice}
+            hasEarlierMessages={!searchQuery && hasEarlierMessages}
+            onLoadEarlier={loadEarlierMessages}
+            isEarlierLoading={isEarlierLoading}
           />
 
           <TypingIndicator usernames={typingUsers} />
