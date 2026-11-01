@@ -25,6 +25,9 @@ import {
 } from "@/lib/schemas"
 import { MAX_ROOM_PARTICIPANTS, ROOM_TTL_SECONDS, pendingKeyFor } from "@/lib/room"
 import { sanitizeText, sanitizeUsername } from "@/lib/sanitize"
+import { createLogger, logger } from "@/lib/logger"
+
+const log = createLogger("api")
 
 /**
  * Uniform error body shared by every failure path, so Eden infers a single
@@ -97,6 +100,7 @@ const rooms = new Elysia({ prefix: "/room" })
       (t) => now - t < WINDOW_MS,
     )
     if (hits.length >= WINDOW_MAX) {
+      log.warn("Room create rate limited", { ip })
       return tooManyRequests(set)
     }
     hits.push(now)
@@ -117,6 +121,8 @@ const rooms = new Elysia({ prefix: "/room" })
     })
 
     await redis.expire(`meta:${roomId}`, ROOM_TTL_SECONDS)
+
+    log.info("Room created", { roomId, ip })
 
     return { roomId }
   },
@@ -228,13 +234,17 @@ return 1`,
       )
 
       if (decision === 0) {
+        log.warn("Join rejected: room full", { roomId, username })
         return roomFull(set)
       }
       if (decision === -1) {
+        log.warn("Join rejected: name taken", { roomId, username })
         return nameTaken(set)
       }
 
       const remaining = await redis.ttl(`meta:${roomId}`)
+
+      log.info("User joined", { roomId, username })
 
       await Promise.all([
         redis.zrem(pendingKeyFor(roomId), token),
@@ -291,6 +301,9 @@ return 1`,
       ]
 
       await Promise.all(keysToDelete.map((key) => redis.del(key)))
+
+      log.info("Room destroyed", { roomId, username: auth.user?.username })
+
       return { success: true }
     },
     {
@@ -319,6 +332,7 @@ const messages = new Elysia({ prefix: "/messages" })
       // Flood control: a fixed window keyed on the auth token, so a runaway
       // or malicious client cannot blanket Redis with messages.
       if (!(await floodGate(roomId, auth.token, "msg", 8, 5))) {
+        log.warn("Message flood gate tripped", { roomId, username })
         return tooManyRequests(set)
       }
 
@@ -475,6 +489,7 @@ const messages = new Elysia({ prefix: "/messages" })
       // scripted client hammering this endpoint needs the same containment
       // messages have.
       if (!(await floodGate(roomId, auth.token, "react", 12, 5))) {
+        log.warn("Reaction flood gate tripped", { roomId, username })
         return tooManyRequests(set)
       }
 
@@ -734,7 +749,27 @@ const presence = new Elysia({ prefix: "/presence" })
     }
   )
 
-const app = new Elysia({ prefix: "/api" }).use(rooms).use(messages).use(presence)
+const app = new Elysia({ prefix: "/api" })
+  .use(rooms)
+  .use(messages)
+  .use(presence)
+  // Anything that escapes a route surfaces as a 500 here: this is the only
+  // place the stack survives, so every unhandled failure finds the log
+  // instead of dying silently.
+  .onError({ as: "global" }, ({ code, error, path }) => {
+    if (code === "VALIDATION") {
+      logger.warn("Request validation failed", { path })
+      return
+    }
+    if (code === "AuthError") {
+      return
+    }
+    logger.error("Unhandled route failure", {
+      path,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    })
+  })
 
 export const GET = app.fetch
 export const POST = app.fetch
