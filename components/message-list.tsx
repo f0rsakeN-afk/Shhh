@@ -85,6 +85,49 @@ export function MessageList({
     onLoadEarlier?.()
   }, [messages, onLoadEarlier])
 
+  // Scrolling near the top quietly pulls the previous page, so paging back
+  // works without aiming for the button; the button remains for discovery.
+  // The guard only re-arms after the first rendered id changes (a real
+  // prepend) or the buffer is exceeded, which stops a single near-top
+  // position from issuing a burst of duplicate fetches.
+  const autoLoadedAtRef = useRef<{ firstId: string; fetches: number } | null>(null)
+
+  useEffect(() => {
+    if (!hasEarlierMessages || !onLoadEarlier || isEarlierLoading) return
+    if (messages.length === 0) return
+
+    const container = containerRef.current
+    if (!container) return
+
+    const viewport = container.querySelector(
+      '[data-slot="scroll-area-viewport"]',
+    ) as HTMLElement | null
+    if (!viewport) return
+
+    const THRESHOLD_PX = 96
+    const MAX_AUTO_FETCHES = 3
+
+    const onScroll = () => {
+      if (isEarlierLoading) return
+      if (viewport.scrollTop > THRESHOLD_PX) return
+
+      const firstId = messages[0]?.id
+      if (firstId === undefined) return
+
+      if (autoLoadedAtRef.current?.firstId === firstId) {
+        if (autoLoadedAtRef.current.fetches >= MAX_AUTO_FETCHES) return
+        autoLoadedAtRef.current.fetches += 1
+      } else {
+        autoLoadedAtRef.current = { firstId, fetches: 1 }
+      }
+
+      handleLoadEarlier()
+    }
+
+    viewport.addEventListener("scroll", onScroll, { passive: true })
+    return () => viewport.removeEventListener("scroll", onScroll)
+  }, [hasEarlierMessages, isEarlierLoading, messages, handleLoadEarlier, onLoadEarlier])
+
   useEffect(() => {
     const newMessages = messages.filter((msg) => !animatedMessages.has(msg.id))
 
