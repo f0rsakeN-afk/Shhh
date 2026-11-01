@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "bun --env-file=.env.local test"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
