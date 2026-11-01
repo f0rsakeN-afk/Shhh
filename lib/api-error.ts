@@ -71,3 +71,8 @@ export function requireOk<TData>(
 export function isSessionStale(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401
 }
+
+/** True when a mutation was rejected by the server's flood control. */
+export function isThrottled(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 429
+}

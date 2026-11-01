@@ -23,7 +23,7 @@ import { ConnectionNotification } from "@/components/connection-notification"
 import { JoinRoomScreen } from "@/components/join-room-screen"
 import { Spinner } from "@/components/ui/spinner"
 import { toastError, toastSuccess } from "@/lib/toast"
-import { requireOk, isSessionStale } from "@/lib/api-error"
+import { requireOk, isSessionStale, isThrottled } from "@/lib/api-error"
 import { notifyIfHidden } from "@/lib/notify"
 import { cn } from "@/lib/utils"
 import type { Message } from "@/lib/schemas"
@@ -213,12 +213,16 @@ const Page = () => {
       toastError({
         title: isSessionStale(err)
           ? "Session expired"
-          : "Message failed to send",
+          : isThrottled(err)
+            ? "Sending too fast"
+            : "Message failed to send",
         description: isSessionStale(err)
           ? "Refresh the page to rejoin and send again."
-          : variables.text.length > 80
-            ? `${variables.text.slice(0, 80)}…`
-            : variables.text,
+          : isThrottled(err)
+            ? "Give it a couple of seconds, then resend."
+            : variables.text.length > 80
+              ? `${variables.text.slice(0, 80)}…`
+              : variables.text,
       })
     },
     onSettled: () => {

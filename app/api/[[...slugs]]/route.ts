@@ -6,6 +6,7 @@ import {
   identityUnknown,
   messageNotFound,
   ownershipForbidden,
+  tooManyRequests,
 } from "./auth"
 import { realtime } from "@/lib/realtime"
 import {
@@ -223,6 +224,28 @@ const messages = new Elysia({ prefix: "/messages" })
           ? body.avatar
           : undefined
       const { roomId } = auth
+
+      // Flood control: a fixed window keyed on the auth token, so a runaway
+      // or malicious client cannot blanket Redis with messages. The expiry
+      // is only set when the counter is created, meaning the window starts
+      // on the first message and legitimately rapid steady typers are not
+      // penalized indefinitely.
+      const RATE_WINDOW_SECONDS = 5
+      const RATE_MAX_MESSAGES = 8
+      const floodKey = `flood:${roomId}:${auth.token}`
+
+      const pipeline = redis.pipeline()
+      pipeline.incr(floodKey)
+      pipeline.ttl(floodKey)
+      const pipelineResult = (await pipeline.exec()) as number[] | null
+      const [floodCount, floodTtl] = pipelineResult ?? []
+
+      if ((floodTtl ?? 0) <= 0) {
+        await redis.expire(floodKey, RATE_WINDOW_SECONDS)
+      }
+      if ((floodCount ?? 0) > RATE_MAX_MESSAGES) {
+        return tooManyRequests()
+      }
 
       const message: Message = {
         id: nanoid(),

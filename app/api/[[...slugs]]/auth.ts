@@ -26,6 +26,11 @@ export function identityUnknown(): Response {
   return response(401, "Unauthorized")
 }
 
+/** The client hit the per-token flood window. */
+export function tooManyRequests(): Response {
+  return response(429, "Sending too fast, try again in a moment")
+}
+
 function response(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
