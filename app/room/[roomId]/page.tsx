@@ -27,6 +27,11 @@ import { requireOk, isSessionStale, isThrottled } from "@/lib/api-error"
 import { notifyIfHidden } from "@/lib/notify"
 import { cn } from "@/lib/utils"
 import type { Message } from "@/lib/schemas"
+import {
+  applyEditedMessage,
+  applyIncomingMessage,
+  assignMessageReactions,
+} from "@/lib/message-reducers"
 
 /** What GET /messages returns; every setQueryData update must keep `hasMore`. */
 interface MessageHistory {
@@ -632,36 +637,12 @@ const Page = () => {
           notifyIfHidden(data.sender, data.text)
         }
 
-        queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
-          if (!old?.messages) return old
-
-          const messageWithToken: Message = { ...data, token: data.sender === joinedUsername ? "current" : undefined }
-
-          if (data.sender === joinedUsername) {
-            const existingIndex = old.messages.findIndex(
-              (msg) => msg.id.startsWith("temp-") && msg.text === data.text && msg.sender === data.sender
-            )
-
-            if (existingIndex !== -1) {
-              const updatedMessages = [...old.messages]
-              updatedMessages[existingIndex] = messageWithToken
-              return { messages: updatedMessages, hasMore: old.hasMore }
-            }
-          }
-
-          const alreadyExists = old.messages.some(
-            (msg) => msg.id === data.id || (msg.text === data.text && msg.sender === data.sender && Math.abs(msg.timestamp - data.timestamp) < 2000)
-          )
-
-          if (alreadyExists) {
-            return old
-          }
-
-          return {
-            messages: [...old.messages, messageWithToken],
-            hasMore: old.hasMore,
-          }
-        })
+        // notifyIfHidden is a UI side effect, deliberately kept outside the
+        // pure reducer in lib/message-reducers.ts.
+        queryClient.setQueryData<MessageHistory>(
+          ["messages", roomId],
+          (old) => applyIncomingMessage(old, data, joinedUsername),
+        )
       }
 
       if (event === "chat.destroy") {
@@ -671,33 +652,19 @@ const Page = () => {
       }
 
       if (event === "chat.edited") {
-        queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
-          if (!old?.messages) return old
-          return {
-            messages: old.messages.map((msg) =>
-              msg.id === data.messageId
-                ? { ...msg, text: data.text, edited: true }
-                : msg,
-            ),
-            hasMore: old.hasMore,
-          }
-        })
+        queryClient.setQueryData<MessageHistory>(
+          ["messages", roomId],
+          (old) => applyEditedMessage(old, data.messageId, data.text),
+        )
       }
 
       if (event === "chat.reaction") {
         // Server-authoritative full state: assign, never merge, so every
         // client converges even under racing clicks.
-        queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
-          if (!old?.messages) return old
-          return {
-            messages: old.messages.map((msg) =>
-              msg.id === data.messageId
-                ? { ...msg, reactions: data.reactions }
-                : msg,
-            ),
-            hasMore: old.hasMore,
-          }
-        })
+        queryClient.setQueryData<MessageHistory>(
+          ["messages", roomId],
+          (old) => assignMessageReactions(old, data.messageId, data.reactions),
+        )
       }
 
       if (event === "chat.typing" && data.username !== joinedUsername) {
