@@ -12,6 +12,11 @@ import { EmojiPicker } from "@/components/emoji-picker"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
+/** Mirrors the server-side `createMessageBodySchema` text cap. */
+const MAX_MESSAGE_LENGTH = 1000
+/** Past this, the remaining-count hint surfaces and stays visible. */
+const NEAR_LIMIT_THRESHOLD = MAX_MESSAGE_LENGTH - 100
+
 interface MessageInputProps {
   onSend: (text: string) => void
   onTyping?: (isTyping: boolean) => void
@@ -51,6 +56,8 @@ export function MessageInput({
   const [loadedEditingId, setLoadedEditingId] = useState<string | null>(null)
 
   const isEditing = Boolean(editing)
+  const remaining = MAX_MESSAGE_LENGTH - input.length
+  const nearLimitRemaining = input.length > NEAR_LIMIT_THRESHOLD && remaining <= 20
 
   // Reset the composer when a different message enters edit mode, and clear
   // it when edit mode ends. Adjusting during render keeps this a one-pass
@@ -444,6 +451,19 @@ export function MessageInput({
           </span>
           <span className="sm:hidden">Say it, then let it go</span>
           <span className="inline-flex items-center gap-1.5">
+            {/* The DOM clamps silently at maxLength; past the threshold the
+                count surfaces so hitting the cap is never a surprise. */}
+            <span
+              className={cn(
+                "tabular-nums",
+                input.length > NEAR_LIMIT_THRESHOLD
+                  ? "inline text-warning-foreground"
+                  : "hidden",
+              )}
+              aria-live={nearLimitRemaining ? "polite" : undefined}
+            >
+              {MAX_MESSAGE_LENGTH - input.length} left
+            </span>
             <span className="size-1 rounded-full bg-brand" aria-hidden="true" />
             Disappears with the room
           </span>

@@ -4,6 +4,16 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { Bomb, Check, Copy, Link2 } from "lucide-react"
 import { Brand } from "@/components/brand"
 import { ThemeToggle } from "@/components/theme-toggle"
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { CountdownTimer } from "./countdown-timer"
 import { toastError, toastSuccess } from "@/lib/toast"
 import { cn } from "@/lib/utils"
@@ -124,18 +134,41 @@ export function RoomHeader({
 
           <ThemeToggle className="size-8" />
 
-          <button
-            type="button"
-            onClick={onDestroy}
-            aria-label="Destroy room"
-            title="Destroy room now"
-            className={cn(
-              "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-xs text-destructive-foreground transition-colors duration-150 hover:border-destructive/30 hover:bg-destructive/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:px-3",
-            )}
-          >
-            <Bomb className="size-3.5" strokeWidth={1.8} aria-hidden="true" />
-            <span className="hidden sm:inline">Destroy</span>
-          </button>
+          <AlertDialog>
+            <AlertDialogTrigger
+              aria-label="Destroy room"
+              title="Destroy room now"
+              className={cn(
+                "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-xs text-destructive-foreground transition-colors duration-150 hover:border-destructive/30 hover:bg-destructive/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:px-3",
+              )}
+            >
+              <Bomb className="size-3.5" strokeWidth={1.8} aria-hidden="true" />
+              <span className="hidden sm:inline">Destroy</span>
+            </AlertDialogTrigger>
+            <AlertDialogContent className="max-w-md">
+              <AlertDialogHeader>
+                <AlertDialogTitle>Destroy this room?</AlertDialogTitle>
+                <AlertDialogDescription className="leading-relaxed">
+                  This permanently deletes the room and every message for all
+                  participants. It ends immediately for the other person too,
+                  and cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogClose
+                  className="inline-flex min-h-9 items-center justify-center rounded-md border border-line px-4 text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                >
+                  Keep it
+                </AlertDialogClose>
+                <AlertDialogClose
+                  onClick={onDestroy}
+                  className="inline-flex min-h-9 items-center justify-center rounded-md border border-destructive/40 bg-destructive/[0.08] px-4 text-sm font-medium text-destructive-foreground transition-colors hover:bg-destructive/[0.14] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                >
+                  Destroy now
+                </AlertDialogClose>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </div>
     </header>

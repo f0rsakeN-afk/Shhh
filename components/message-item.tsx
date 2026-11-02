@@ -9,7 +9,7 @@ import { ReadReceiptIndicator } from "./read-receipt"
 import { MessageActions } from "./message-actions"
 import { UserAvatar } from "./user-avatar"
 import { sanitizeText, sanitizeUsername } from "@/lib/sanitize"
-import { toastSuccess } from "@/lib/toast"
+import { toastError, toastSuccess } from "@/lib/toast"
 import { cn } from "@/lib/utils"
 
 interface MessageItemProps {
@@ -51,8 +51,17 @@ export const MessageItem = memo(function MessageItem({
   }, [message.id, onEdit])
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard?.writeText(message.text)
-    toastSuccess({ title: "Copied" })
+    // Toast only on the settled result — a clipboard denial previously
+    // reported "Copied" and threw an unhandled rejection.
+    navigator.clipboard
+      ?.writeText(message.text)
+      .then(() => toastSuccess({ title: "Copied" }))
+      .catch(() =>
+        toastError({
+          title: "Copy failed",
+          description: "Clipboard access was denied by the browser.",
+        }),
+      )
   }, [message.text])
 
   // Optimistic (temp-) messages are not server-owned yet, so they are not

@@ -1,7 +1,7 @@
 "use client"
 
 import { TimerReset } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 
 interface CountdownTimerProps {
@@ -25,10 +25,16 @@ export function CountdownTimer({
     initialTtl ?? null,
   )
   const [syncedTtl, setSyncedTtl] = useState(initialTtl)
+  // Latch so expiry fires exactly once, no matter how many parent
+  // re-renders feed a fresh `initialTtl` afterwards.
+  const expiredFiredRef = useRef(false)
+  // Derived rather than stored: more honest, and it keeps setState out of
+  // the effect body (the expiry action affects the router, not our tree).
+  const isExpired = timeRemaining !== null && timeRemaining <= 0
 
   // Adjust state during render when a fresh TTL arrives, rather than in an
   // effect, so the first paint already shows the server value.
-  if (initialTtl !== syncedTtl) {
+  if (initialTtl !== syncedTtl && !isExpired) {
     setSyncedTtl(initialTtl)
     setTimeRemaining(initialTtl ?? null)
   }
@@ -37,7 +43,10 @@ export function CountdownTimer({
     if (timeRemaining === null) return
 
     if (timeRemaining <= 0) {
-      onExpire?.()
+      if (!expiredFiredRef.current) {
+        expiredFiredRef.current = true
+        onExpire?.()
+      }
       return
     }
 
@@ -77,6 +86,13 @@ export function CountdownTimer({
         aria-hidden="true"
       />
       <span className="min-w-[2.5rem] text-center">{formatted}</span>
+      {/* Screen readers get the destructive event explicitly; from 0 the
+          room navigates away, and a visual-only countdown is silent to
+          assistive tech. role="timer" with aria-live="off" stays correct
+          while counting (not announced per tick). */}
+      <span role="status" aria-live="assertive" className="sr-only">
+        {isExpired ? "This room has expired" : undefined}
+      </span>
     </span>
   )
 }

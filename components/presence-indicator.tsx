@@ -11,6 +11,12 @@ interface PresenceIndicatorProps {
     status: "online" | "offline" | "away"
     avatar?: number
   }>
+  /**
+   * True while the participants snapshot is unavailable (query error): the
+   * bar stays rendered with the caller's fallback list instead of
+   * vanishing, but is presented as untrustworthy.
+   */
+  isDegraded?: boolean
 }
 
 /** Single-user status label */
@@ -62,6 +68,7 @@ export function PresenceIndicator({
   username,
   status,
   participants,
+  isDegraded = false,
 }: PresenceIndicatorProps) {
   const label = statusLabels[status].label
 
@@ -102,13 +109,15 @@ export function PresenceIndicator({
 
       <div className="flex items-center gap-1.5">
         <span
-          className={cn(
-            "text-xs font-medium text-muted-foreground",
-            "title:" + username + " is " + label.toLowerCase(),
-          )}
-          title={username + " is " + label.toLowerCase()}
+          className="text-xs font-medium text-muted-foreground"
+          title={
+            isDegraded
+              ? "Participants unavailable right now — showing the last known state"
+              : onlineCount + "/" + participants.length + " online"
+          }
         >
-          {onlineCount}/{participants.length} online
+          {onlineCount}/{participants.length}
+          {isDegraded ? "?" : ""} online
         </span>
 
         {/* Scrollable participants grid */}

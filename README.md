@@ -36,6 +36,17 @@ Elysia.
   at 8 messages per 5 seconds, 429 otherwise
 - Sessions self-heal: if the proxy recycles a token, API calls 401 and the
   client drops back to the join screen
+- Read receipts are batched: the client coalesces each observation burst
+  into at most one `POST /api/messages/read` with up to 50 ids, and the
+  server attributes each from the cookie identity, skipping ids that
+  vanished mid-scroll
+- Realtime resilience: the SSE stream carries all live traffic, so when it
+  blips the client resyncs on reconnect, on tab focus and — while the
+  transport stays down (the provider gives up after 5 reconnect attempts)
+  — falls back to a 10s REST poll until the stream recovers
+- Server-side logging: an app-root error handler prints every unhandled 500
+  with its stack, and security seams (creates, joins, flood gates) emit
+  structured events; filter with `LOG_LEVEL` (default `info`)
 
 ## History windowing
 
@@ -43,8 +54,11 @@ The client keeps the newest 100 messages in React Query and pages back in
 blocks through `GET /api/messages?roomId=...&limit=...&before={ts}` (newest
 first, cursor exclusive, `hasMore` flag on every page). Older pages are kept
 in local state; scrolling near the top silently prepends the previous page,
-and viewport anchoring keeps the reader in place during prepends while new
-messages still sink the view to the newest content.
+and viewport anchoring keeps the reader in place during prepends. New
+messages sink the view to the newest content only while the reader is near
+the bottom; scrolled-up readers get a "New messages" jump pill instead of
+being yanked. The room auto-destruction shows a warning palette countdown
+and announces expiry to screen readers.
 
 ## Getting started
 
@@ -58,8 +72,8 @@ bun run dev      # http://localhost:3000
 ```
 
 - `npm` / `pnpm` / `yarn` equally work; the lockfile is Bun's
-- `bun run build && bun run lint` are the gates; both are expected to pass
-  with zero warnings
+- `bun run build && bun run lint && bun run typecheck` are the gates; all
+  are expected to pass clean
 
 ## Environment
 

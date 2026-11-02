@@ -20,7 +20,6 @@ import {
   createMessageBodySchema,
   editMessageBodySchema,
   type Message,
-  type ReadReceipt,
   type Reaction,
 } from "@/lib/schemas"
 import { MAX_ROOM_PARTICIPANTS, ROOM_TTL_SECONDS, pendingKeyFor } from "@/lib/room"
@@ -115,12 +114,15 @@ const rooms = new Elysia({ prefix: "/room" })
 
     const roomId = nanoid()
 
-    await redis.hset(`meta:${roomId}`, {
+    // One pipeline instead of two sequential round-trips to the REST edge;
+    // room creation is on the first-interaction critical path.
+    const setup = redis.pipeline()
+    setup.hset(`meta:${roomId}`, {
       connected: JSON.stringify([]),
       createdAt: Date.now(),
     })
-
-    await redis.expire(`meta:${roomId}`, ROOM_TTL_SECONDS)
+    setup.expire(`meta:${roomId}`, ROOM_TTL_SECONDS)
+    await setup.exec()
 
     log.info("Room created", { roomId, ip })
 
@@ -346,19 +348,34 @@ const messages = new Elysia({ prefix: "/messages" })
       }
 
       // HASH for O(1) point access, ZSET for timestamp ordering: reactions,
-      // receipts, edits and deletes never scan the conversation.
-      await Promise.all([
-        redis.hset(msgKeyFor(roomId), {
-          [message.id]: JSON.stringify({ ...message, token: auth.token }),
-        }),
-        redis.zadd(msgOrderKeyFor(roomId), {
-          member: message.id,
-          score: message.timestamp,
-        }),
-        realtime.channel(roomId).emit("chat.message", message),
-      ])
+      // receipts, edits and deletes never scan the conversation. The TTL
+      // read rides the same pipeline, so sustaining the room's lifetime is
+      // one extra round-trip after a one round-trip write instead of a
+      // sequential chain.
+      const emitMessage = realtime.channel(roomId).emit("chat.message", message)
 
-      await retainRoomTtl(roomId, [msgKeyFor(roomId), msgOrderKeyFor(roomId)])
+      const persist = redis.pipeline()
+      persist.hset(msgKeyFor(roomId), {
+        [message.id]: JSON.stringify({ ...message, token: auth.token }),
+      })
+      persist.zadd(msgOrderKeyFor(roomId), {
+        member: message.id,
+        score: message.timestamp,
+      })
+      persist.ttl(`meta:${roomId}`)
+      const results = (await persist.exec()) as unknown[]
+      const remainingTtl = Number(results[2])
+
+      if (remainingTtl > 0) {
+        // Parallel expirations; the room's remaining lifetime is shared by
+        // both transcript keys so they die with the room.
+        await Promise.all([
+          redis.expire(msgKeyFor(roomId), remainingTtl),
+          redis.expire(msgOrderKeyFor(roomId), remainingTtl),
+        ])
+      }
+
+      await emitMessage
 
       return { success: true }
     },
@@ -540,8 +557,8 @@ const messages = new Elysia({ prefix: "/messages" })
   )
   .post(
     "/read",
-    async ({ body, auth, set }) => {
-      const { messageId } = body
+    async ({ body, auth }) => {
+      const { messageIds } = body
       const { roomId, user } = auth
       // Receipts are attributed to the token's identity; a body username is
       // never trusted, so no one can forge someone else's read receipt.
@@ -550,36 +567,69 @@ const messages = new Elysia({ prefix: "/messages" })
         return { success: true }
       }
 
-      const message = await readMessage(roomId, messageId)
-      if (!message) {
-        return messageNotFound(set)
-      }
-
-      const readBy = message.readBy || []
-
-      const alreadyRead = readBy.some(
-        (r: ReadReceipt) => r.username === username,
+      // One EVAL covers the whole batch: an HGET + conditional HSET per
+      // message would be 2N round-trips to a Upstash REST edge, turning a
+      // single scroll burst into a cascade of sequential HTTP requests. In
+      // the script the read-modify-write cycle is also atomic, so two
+      // concurrent batches for one user can never double-append a receipt.
+      // Missing ids (deleted between fetch and receipt) are skipped without
+      // failing the batch. KEYS[1] is the message hash; ARGV[1..2] carry
+      // the username and timestamp, ARGV[3..] the message ids.
+      const mutated = await redis.eval<unknown[], number>(
+        `local msgKey = KEYS[1]
+local username = ARGV[1]
+local readAt = tonumber(ARGV[2])
+local mutated = 0
+for i = 3, #ARGV do
+  local raw = redis.call('HGET', msgKey, ARGV[i])
+  if raw then
+    local ok, message = pcall(function() return cjson.decode(raw) end)
+    if ok and type(message) == 'table' then
+      local already = false
+      if message.readBy then
+        for _, receipt in ipairs(message.readBy) do
+          if receipt.username == username then
+            already = true
+            break
+          end
+        end
+      end
+      if not already then
+        if message.readBy == nil then message.readBy = {} end
+        table.insert(message.readBy, { username = username, timestamp = readAt })
+        redis.call('HSET', msgKey, ARGV[i], cjson.encode(message))
+        mutated = mutated + 1
+      end
+    end
+  end
+end
+if mutated > 0 then
+  local remaining = redis.call('TTL', msgKey)
+  if remaining > 0 then redis.call('EXPIRE', msgKey, remaining) end
+end
+return mutated`,
+        [msgKeyFor(roomId)],
+        [username, String(Date.now()), ...messageIds],
       )
-      if (!alreadyRead) {
-        const updatedMessage = {
-          ...message,
-          readBy: [...readBy, { username, timestamp: Date.now() }],
-        }
-        await writeMessage(roomId, updatedMessage)
-        await retainRoomTtl(roomId, [msgKeyFor(roomId)])
-      }
+
+      log.debug("Read receipts applied", {
+        roomId,
+        requested: messageIds.length,
+        mutated: Number(mutated),
+      })
 
       return { success: true }
     },
     {
       query: roomIdQuerySchema,
       body: t.Object({
-        messageId: t.String({ maxLength: 64 }),
+        // One batch receipt per typing/scroll burst; 50 is well above what an
+        // intersection observer can queue in a single frame.
+        messageIds: t.Array(t.String({ maxLength: 64 }), { maxItems: 50, minItems: 1 }),
       }),
       response: {
         ...authedErrors,
         200: t.Object({ success: t.Literal(true) }),
-        404: errorBody,
       },
     }
   )

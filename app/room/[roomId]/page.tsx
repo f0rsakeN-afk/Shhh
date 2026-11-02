@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react"
-import { Search, X } from "lucide-react"
+import { Search, X, RotateCcw } from "lucide-react"
 import { useUsername } from "@/hooks/use-username"
 import { useSound } from "@/hooks/use-sound"
 import { client } from "@/lib/client"
@@ -36,6 +36,9 @@ interface MessageHistory {
 
 const JOINED_STORAGE_KEY = (roomId: string) => `joined_${roomId}`
 
+/** Receiver-side grace before a silent typist's pill drops off. */
+const TYPING_PILL_TTL_MS = 6000
+
 const searchInputClasses =
   "h-9 w-full rounded-lg border border-input bg-background pl-9 pr-8 text-sm text-foreground outline-none transition-colors duration-150 placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
 
@@ -46,6 +49,7 @@ const Page = () => {
   const { username } = useUsername()
   const playBombSound = useSound("/meme_bomb_sound.mp3")
   const [typingUsers, setTypingUsers] = useState<string[]>([])
+  const typingExpiryRef = useRef<Map<string, number>>(new Map())
   const [realtimePresence, setRealtimePresence] = useState<{ username: string; status: "online" | "offline" | "away" } | null>(null)
   const [connectionNotification, setConnectionNotification] = useState<{ username: string; action: "joined" | "left" } | null>(null)
   const [hasJoined, setHasJoined] = useState<boolean>(false)
@@ -58,6 +62,11 @@ const Page = () => {
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | undefined>(undefined)
   const typingDebounceRef = useRef<NodeJS.Timeout | undefined>(undefined)
   const autoCopiedRef = useRef(false)
+  // Batched read receipts: ids observed since the last flush, sent together
+  // on a trailing timer. Declared with the other refs so every hook below
+  // sees a stable handle.
+  const readQueueRef = useRef<Set<string>>(new Set())
+  const readFlushTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // The timer is seeded once at join and then server-locked by the heartbeat
   // (which returns the room TTL every 30s), so no focus or interval refetch.
@@ -93,11 +102,18 @@ const Page = () => {
       typingDebounceRef.current = undefined
     }
 
+    if (readFlushTimeoutRef.current) {
+      clearTimeout(readFlushTimeoutRef.current)
+      readFlushTimeoutRef.current = undefined
+      readQueueRef.current.clear()
+    }
+
     queryClient.removeQueries({ queryKey: ["messages", roomId] })
     queryClient.removeQueries({ queryKey: ["presence", roomId] })
     queryClient.removeQueries({ queryKey: ["ttl", roomId] })
 
     setTypingUsers([])
+    typingExpiryRef.current.clear()
     setRealtimePresence(null)
     setConnectionNotification(null)
     setEditing(null)
@@ -106,7 +122,11 @@ const Page = () => {
 
   // Recent tail of the transcript; older pages are user-fetched and kept in
   // local state so prepend-anchor scrolling never re-triggers a query.
-  const { data: messages } = useQuery({
+  const {
+    data: messages,
+    isError: isMessagesError,
+    refetch: refetchMessages,
+  } = useQuery({
     queryKey: ["messages", roomId],
     queryFn: async () => {
       const res = await client.messages.get({ query: { roomId, limit: 100 } })
@@ -375,17 +395,19 @@ const Page = () => {
     },
   })
 
-  const { mutate: markAsRead } = useMutation({
-    mutationFn: async (messageId: string) => {
-      // Receipts are server-attributed; the username no longer travels here.
-      await client.messages.read.post({ messageId }, { query: { roomId } })
+  const { mutate: sendReadReceipts } = useMutation({
+    mutationFn: async (messageIds: string[]) => {
+      // One batched receipt per observation burst; the server attributes
+      // each from the cookie identity.
+      await client.messages.read.post({ messageIds }, { query: { roomId } })
     },
-    onSuccess: (_, messageId) => {
+    onSuccess: (_, messageIds) => {
       queryClient.setQueryData<MessageHistory>(["messages", roomId], (old) => {
         if (!old?.messages) return old
+        const arriving = new Set(messageIds)
         return {
           messages: old.messages.map((msg) => {
-            if (msg.id === messageId) {
+            if (arriving.has(msg.id)) {
               const readBy = msg.readBy || []
               if (!readBy.some((r) => r.username === joinedUsername)) {
                 return {
@@ -429,7 +451,10 @@ const Page = () => {
     },
   })
 
-  const { data: presenceData } = useQuery({
+  const {
+    data: presenceData,
+    isError: isErrorPresence,
+  } = useQuery({
     queryKey: ["presence", roomId],
     queryFn: async () => {
       const res = await client.presence.get({ query: { roomId } })
@@ -598,7 +623,7 @@ const Page = () => {
     return null
   }, [allMessages, joinedUsername])
 
-  useRealtime({
+  const { status: realtimeStatus } = useRealtime({
     channels: [roomId],
     events: ["chat.message", "chat.destroy", "chat.typing", "chat.presence", "chat.connection", "chat.reaction", "chat.edited"],
     onData: ({ event, data }) => {
@@ -676,12 +701,15 @@ const Page = () => {
       }
 
       if (event === "chat.typing" && data.username !== joinedUsername) {
-        setTypingUsers((prev) => {
-          if (data.isTyping) {
-            return prev.includes(data.username) ? prev : [...prev, data.username]
-          }
-          return prev.filter((u) => u !== data.username)
-        })
+        if (data.isTyping) {
+          // Receiver-side expiry: the pill must depend on our own clock,
+          // not on one `isTyping: false` event surviving an SSE rotation.
+          typingExpiryRef.current.set(data.username, Date.now() + TYPING_PILL_TTL_MS)
+          setTypingUsers((prev) => (prev.includes(data.username) ? prev : [...prev, data.username]))
+        } else {
+          typingExpiryRef.current.delete(data.username)
+          setTypingUsers((prev) => prev.filter((u) => u !== data.username))
+        }
       }
 
       if (event === "chat.presence" && data.username !== joinedUsername) {
@@ -694,6 +722,74 @@ const Page = () => {
       }
     },
   })
+
+  // Silent typists: any participant whose pill is in the map drops out once
+  // their own grace window passes, whether or not their `isTyping: false`
+  // event survived the SSE connection.
+  useEffect(() => {
+    if (typingUsers.length === 0) return
+    const interval = setInterval(() => {
+      const now = Date.now()
+      const expired = Array.from(typingExpiryRef.current.entries()).filter(
+        ([, expiry]) => expiry <= now,
+      )
+      if (expired.length === 0) return
+      for (const [username] of expired) {
+        typingExpiryRef.current.delete(username)
+      }
+      setTypingUsers((prev) => prev.filter((u) => typingExpiryRef.current.has(u)))
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [typingUsers])
+
+  // Live transport recovery. While the SSE stream is healthy, chat events
+  // are the source of truth. When it degrades or dies (provider caps
+  // reconnects at 5, SSE rotates every `maxDurationSecs`), a thin polling
+  // safety net invalidates the cache so the REST tail converges — and one
+  // successful resync after `connected` closes any gap a blip dropped.
+  const connectionWasDownRef = useRef(false)
+
+  useEffect(() => {
+    if (realtimeStatus === "connected") {
+      if (connectionWasDownRef.current) {
+        connectionWasDownRef.current = false
+        queryClient.invalidateQueries({ queryKey: ["messages", roomId] })
+        queryClient.invalidateQueries({ queryKey: ["presence", roomId] })
+      }
+      return
+    }
+    if (realtimeStatus !== "connecting") {
+      connectionWasDownRef.current = true
+    }
+  }, [realtimeStatus, hasJoined, roomId, queryClient])
+
+  useEffect(() => {
+    if (!hasJoined) return
+    if (realtimeStatus === "connected") return
+
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ["messages", roomId] })
+      queryClient.invalidateQueries({ queryKey: ["presence", roomId] })
+    }, 10_000)
+    return () => clearInterval(interval)
+  }, [hasJoined, realtimeStatus, roomId, queryClient])
+
+  // Returning to the tab can carry silently dropped events (mobile lock
+  // screens, backgrounded tabs); the tail refetches once on return.
+  useEffect(() => {
+    if (!hasJoined) return
+
+    const resync = () => {
+      if (document.visibilityState !== "visible") return
+      queryClient.invalidateQueries({ queryKey: ["messages", roomId] })
+    }
+    document.addEventListener("visibilitychange", resync)
+    window.addEventListener("focus", resync)
+    return () => {
+      document.removeEventListener("visibilitychange", resync)
+      window.removeEventListener("focus", resync)
+    }
+  }, [hasJoined, roomId, queryClient])
 
   const handleTyping = useCallback(
     (isTyping: boolean) => {
@@ -723,9 +819,20 @@ const Page = () => {
 
   const handleMessageRead = useCallback(
     (messageId: string) => {
-      markAsRead(messageId)
+      // Intersection observers fire per message; a fast scroll would
+      // otherwise issue one POST per element. The queue coalesces the
+      // burst into a single batched receipt with a small trailing delay.
+      readQueueRef.current.add(messageId)
+      if (readFlushTimeoutRef.current) return
+
+      readFlushTimeoutRef.current = setTimeout(() => {
+        readFlushTimeoutRef.current = undefined
+        const batch = Array.from(readQueueRef.current)
+        readQueueRef.current.clear()
+        if (batch.length > 0) sendReadReceipts(batch)
+      }, 400)
     },
-    [markAsRead],
+    [sendReadReceipts],
   )
 
   const handleDeleteMessage = useCallback(
@@ -853,20 +960,21 @@ const Page = () => {
 
       <div className="flex flex-1 flex-col items-center overflow-hidden">
         <div className="border-line flex h-full w-full max-w-5xl flex-col md:border-x">
-          {presenceData?.users && (
+          {(presenceData?.users || isErrorPresence) && (
             <div className="shrink-0 border-b border-line bg-card/30 px-3 py-2.5 sm:px-6">
               <div className="mx-auto flex w-full items-center gap-2">
                 <div className="min-w-0 flex-1">
                   <PresenceIndicator
                     username={joinedUsername}
                     status="online"
-                    participants={presenceData.users.map((u) => (
+                    participants={(presenceData?.users ?? [{ username: joinedUsername, status: "online" as const, avatar: joinedAvatar }]).map((u) => (
                       {
                         username: u.username,
                         status: u.status,
                         avatar: u.avatar,
                       }
                     ))}
+                    isDegraded={isErrorPresence}
                   />
                 </div>
 
@@ -903,6 +1011,20 @@ const Page = () => {
               username={connectionNotification.username}
               action={connectionNotification.action}
             />
+          )}
+
+          {/* Our transport health. The pill above reports the OTHER user's
+              movements; this row reports this client's own live stream. */}
+          {realtimeStatus !== "connected" && (
+            <div
+              role="status"
+              className="flex shrink-0 items-center justify-center gap-2 border-b border-line bg-warning/[0.06] px-4 py-1.5 text-xs text-warning-foreground"
+            >
+              <span className="size-1.5 animate-pulse rounded-full bg-warning" aria-hidden="true" />
+              {realtimeStatus === "connecting"
+                ? "Connecting to live updates…"
+                : "Live updates interrupted — the transcript refreshes every few seconds."}
+            </div>
           )}
 
           {/* Search row: exists only while open, so messages keep the space */}
@@ -953,19 +1075,43 @@ const Page = () => {
             </div>
           )}
 
-          <MessageList
-            messages={filteredMessages}
-            currentUsername={joinedUsername}
-            otherUsername={otherUser?.username}
-            onReaction={handleReaction}
-            onMessageRead={handleMessageRead}
-            onDelete={handleDeleteMessage}
-            onEdit={handleStartEdit}
-            emptyNotice={searchNotice}
-            hasEarlierMessages={!searchQuery && hasEarlierMessages}
-            onLoadEarlier={loadEarlierMessages}
-            isEarlierLoading={isEarlierLoading}
-          />
+          {isMessagesError ? (
+            /* A failed history read must not masquerade as a quiet room. */
+            <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center gap-4 px-4 sm:min-h-[420px]">
+              <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                Conversation lost
+              </p>
+              <p
+                role="alert"
+                className="max-w-sm text-center text-sm leading-relaxed text-muted-foreground"
+              >
+                The transcript could not be loaded. Your messages are safe —
+                retry when the connection returns.
+              </p>
+              <button
+                type="button"
+                onClick={() => void refetchMessages()}
+                className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-primary bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              >
+                <RotateCcw className="size-3.5" aria-hidden="true" />
+                Retry
+              </button>
+            </div>
+          ) : (
+            <MessageList
+              messages={filteredMessages}
+              currentUsername={joinedUsername}
+              otherUsername={otherUser?.username}
+              onReaction={handleReaction}
+              onMessageRead={handleMessageRead}
+              onDelete={handleDeleteMessage}
+              onEdit={handleStartEdit}
+              emptyNotice={searchNotice}
+              hasEarlierMessages={!searchQuery && hasEarlierMessages}
+              onLoadEarlier={loadEarlierMessages}
+              isEarlierLoading={isEarlierLoading}
+            />
+          )}
 
           <TypingIndicator usernames={typingUsers} />
 

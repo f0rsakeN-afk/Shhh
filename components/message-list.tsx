@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
-import { ChevronUp, MessageCircle, SearchX } from "lucide-react"
+import { memo, useCallback, useEffect, useRef, useState } from "react"
+import { ArrowDown, ChevronUp, MessageCircle, SearchX } from "lucide-react"
 import { format } from "date-fns"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
@@ -43,7 +43,7 @@ function formatSeparationDate(timestamp: number): string {
   return format(date, "MMMM d")
 }
 
-export function MessageList({
+export const MessageList = memo(function MessageList({
   messages,
   currentUsername,
   otherUsername,
@@ -59,7 +59,39 @@ export function MessageList({
   const containerRef = useRef<HTMLDivElement>(null)
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const readMessagesRef = useRef<Set<string>>(new Set())
+  // Stable per-id ref callbacks: an inline closure is a fresh identity every
+  // render, so React detaches and reattaches every row's ref on each render
+  // (detach → null write → delete from the map → attach → set). The factory
+  // memoizes one callback per id for the row's lifetime.
+  const refCallbacksRef = useRef<Map<string, (el: HTMLDivElement | null) => void>>(
+    new Map(),
+  )
   const [animatedMessages, setAnimatedMessages] = useState<Set<string>>(new Set())
+  // Set when a message lands while the reader is scrolled away; cleared by
+  // clicking the jump pill or by scrolling back near the bottom.
+  const [hasUnseenBelow, setHasUnseenBelow] = useState(false)
+
+  /** Distance in px under which the viewport counts as "at the bottom". */
+  const NEAR_BOTTOM_PX = 160
+
+  const findViewport = useCallback(
+    () =>
+      (containerRef.current?.querySelector(
+        '[data-slot="scroll-area-viewport"]',
+      ) as HTMLElement | null) ?? null,
+    [],
+  )
+
+  const scrollToEnd = useCallback(
+    (behavior: ScrollBehavior = "smooth") => {
+      const viewport = findViewport()
+      viewport?.scrollTo({ top: viewport.scrollHeight, behavior })
+      setHasUnseenBelow(false)
+    },
+    [findViewport],
+  )
+
+  const jumpToLatest = useCallback(() => scrollToEnd("smooth"), [scrollToEnd])
 
   // Captured when "Load earlier" is pressed, consumed after the prepend
   // renders so the viewport stays anchored on what the user was reading.
@@ -146,14 +178,14 @@ export function MessageList({
 
   // Scroll choreography: a PREPEND keeps the reading anchor, an APPEND (new
   // messages from realtime or optimistic send) sinks the viewport to the
-  // newest content, and the first mount just lands at the bottom.
+  // newest content — but only when the reader is near the bottom; a reader
+  // scrolled back into history gets a "jump to latest" pill instead of
+  // being yanked, and the first mount just lands at the bottom.
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
 
-    const viewport = container.querySelector(
-      '[data-slot="scroll-area-viewport"]',
-    ) as HTMLElement | null
+    const viewport = findViewport()
     if (!viewport) return
 
     requestAnimationFrame(() => {
@@ -169,15 +201,89 @@ export function MessageList({
 
       const lastMessageId = messages.at(-1)?.id
       if (lastMessageId !== undefined && lastMessageId !== lastMessageIdRef.current) {
-        viewport.scrollTo({
-          top: viewport.scrollHeight,
-          behavior: lastMessageIdRef.current === undefined ? "auto" : "smooth",
-        })
+        const isInitialRender = lastMessageIdRef.current === undefined
+        const distanceFromBottom =
+          viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+
+        if (isInitialRender || distanceFromBottom <= NEAR_BOTTOM_PX) {
+          scrollToEnd(isInitialRender ? "auto" : "smooth")
+        } else {
+          setHasUnseenBelow(true)
+        }
       }
 
       lastMessageIdRef.current = lastMessageId
     })
+  }, [messages, findViewport, scrollToEnd])
+
+  // Any scroll back near the bottom dismisses the unseen pill.
+  useEffect(() => {
+    if (!hasUnseenBelow) return
+
+    const viewport = findViewport()
+    if (!viewport) return
+
+    const onScroll = () => {
+      if (
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <=
+        NEAR_BOTTOM_PX
+      ) {
+        setHasUnseenBelow(false)
+      }
+    }
+    viewport.addEventListener("scroll", onScroll, { passive: true })
+    return () => viewport.removeEventListener("scroll", onScroll)
+  }, [hasUnseenBelow, findViewport])
+
+  // Landed state for messages that are no longer rendered (paged out after
+  // long sessions) is dropped so the ref/callback maps stay proportional to
+  // visible history rather than growing unbounded. Stateful pruning for the
+  // animation set happens during render below (a plain ref cleanup there
+  // would need a setState, which the hooks compiler rejects in effect
+  // bodies).
+  useEffect(() => {
+    const knownIds = new Set(messages.map((message) => message.id))
+
+    for (const id of Array.from(messageRefs.current.keys())) {
+      if (!knownIds.has(id)) {
+        messageRefs.current.delete(id)
+        refCallbacksRef.current.delete(id)
+      }
+    }
   }, [messages])
+
+  // Animation membership is derived-from-render data; once the rendered
+  // set is far smaller than the tracked set (huge bounded lists), shrink it.
+  if (animatedMessages.size > messages.length + 250) {
+    const knownIds = new Set(messages.map((message) => message.id))
+    const pruned = new Set(
+      Array.from(animatedMessages).filter((id) => knownIds.has(id)),
+    )
+    if (pruned.size < animatedMessages.size) {
+      setAnimatedMessages(pruned)
+    }
+  }
+
+  // One callback per id, recreated only for genuinely new ids.
+  const getMessageRef = useCallback((id: string) => {
+    let callback = refCallbacksRef.current.get(id)
+    if (!callback) {
+      callback = (el: HTMLDivElement | null) => {
+        if (el) messageRefs.current.set(id, el)
+        else messageRefs.current.delete(id)
+      }
+      refCallbacksRef.current.set(id, callback)
+    }
+    return callback
+  }, [])
+
+  // Read receipts: ONE observer lives for the lifetime of a handler
+  // generation (onMessageRead/otherUsername identity), because tearing it
+  // down and re-observing every row on each incoming message devolves into
+  // O(n) work per new message. A dedicated pass observes only refs that
+  // mounted since the last run, which happens exactly when messages change.
+  const observerRef = useRef<IntersectionObserver | null>(null)
+  const observedIdsRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     if (!onMessageRead || !otherUsername) return
@@ -197,17 +303,51 @@ export function MessageList({
       { threshold: 0.5 },
     )
 
-    messageRefs.current.forEach((el) => {
-      if (el) observer.observe(el)
-    })
+    // A new generation starts from a clean observation ledger: the
+    // previous observer was disconnected, so every current row needs
+    // re-observing (one O(n) pass on a rare identity change).
+    observedIdsRef.current.clear()
+    observerRef.current = observer
+
+    for (const [id, el] of messageRefs.current) {
+      if (!el) continue
+      observer.observe(el)
+      observedIdsRef.current.add(id)
+    }
 
     return () => {
       observer.disconnect()
+      if (observerRef.current === observer) {
+        observerRef.current = null
+      }
     }
-  }, [messages, onMessageRead, otherUsername])
+  }, [onMessageRead, otherUsername])
+
+  // Message changes mount rows; observe the newcomers only.
+  useEffect(() => {
+    const observer = observerRef.current
+    if (!observer) return
+
+    for (const [id, el] of messageRefs.current) {
+      if (!el || observedIdsRef.current.has(id)) continue
+      observer.observe(el)
+      observedIdsRef.current.add(id)
+    }
+  }, [messages])
 
   return (
-    <div ref={containerRef} className="flex min-h-0 flex-1 flex-col">
+    <div ref={containerRef} className="relative flex min-h-0 flex-1 flex-col">
+      {hasUnseenBelow && (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          aria-label="Jump to newest messages"
+          className="absolute bottom-3 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-brand/40 bg-brand-soft px-3 py-1.5 text-xs font-medium text-brand shadow-sm transition-colors hover:bg-brand/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        >
+          <ArrowDown className="size-3" strokeWidth={2} aria-hidden="true" />
+          New messages
+        </button>
+      )}
       <ScrollArea className="flex-1" scrollFade hideScrollbar>
         <div
           role="log"
@@ -272,10 +412,7 @@ export function MessageList({
             return (
               <div
                 key={msg.id}
-                ref={(el) => {
-                  if (el) messageRefs.current.set(msg.id, el)
-                  else messageRefs.current.delete(msg.id)
-                }}
+                ref={getMessageRef(msg.id)}
                 data-message-id={msg.id}
                 className={isNewMessage ? "message-enter" : ""}
               >
@@ -307,4 +444,4 @@ export function MessageList({
       </ScrollArea>
     </div>
   )
-}
+})
