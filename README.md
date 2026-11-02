@@ -1,8 +1,8 @@
 # Shhh
 
-Ephemeral two-person chat rooms that self-destruct. Create a room, share the
-link, pick a name, and talk: when the hour is up (or either participant hits
-destroy), the conversation and every Redis key behind it are gone.
+Ephemeral chat rooms for up to ten people that self-destruct. Create a
+room, share the link, pick a name, and talk: when the hour is up (or the
+room is destroyed), the conversation and every Redis key behind it are gone.
 
 ## How it works
 
@@ -25,6 +25,10 @@ Elysia.
 - Identity comes from the server, not the client. Each page load gets an
   httpOnly, sameSite=strict `x-auth-token` cookie; username and avatar are
   looked up server-side from that token and request bodies carry none of it
+- Rooms hold up to `MAX_ROOM_PARTICIPANTS` (10) participants, enforced
+  identically from one constant: the proxy door redirects surplus visitors
+  and the Lua join gate rejects tokens past the ceiling (403), so the two
+  layers can never disagree about capacity
 - Only the author or sender of a message can edit, delete or read-receipt its
   own side; foreign tokens get 403, and delete broadcasts strip the author
   token before fanning out
@@ -46,7 +50,10 @@ Elysia.
   — falls back to a 10s REST poll until the stream recovers
 - Server-side logging: an app-root error handler prints every unhandled 500
   with its stack, and security seams (creates, joins, flood gates) emit
-  structured events; filter with `LOG_LEVEL` (default `info`)
+  structured events; the level filters output
+- Content-Security-Policy is scope-exact: realtime rides `EventSource` over
+  the same origin, so production `connect-src` is `'self'` (dev adds only
+  localhost HMR WebSockets)
 
 ## History windowing
 
@@ -83,6 +90,7 @@ bun run dev      # http://localhost:3000
 | `UPSTASH_REDIS_REST_TOKEN` | Matching REST token                                        |
 | `NEXT_PUBLIC_SITE_URL`   | Canonical URL for links, sitemap and OG metadata              |
 | `NEXT_PUBLIC_API_URL`    | API base for the client; defaults to the current origin       |
+| `LOG_LEVEL`              | Server log threshold: `debug`, `info` (default), `warn`, `error` |
 
 ## Stack
 

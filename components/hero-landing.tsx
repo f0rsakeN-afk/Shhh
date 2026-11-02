@@ -28,7 +28,7 @@ const features = [
   {
     icon: KeyRound,
     title: "Send one link",
-    body: "The link is the only invite. Up to ten people can be in the room, and everyone arrives with a generated name.",
+    body: "The link is the only invite. Up to ten people can be in the room, and everyone arrives with a name already suggested.",
   },
   {
     icon: TimerReset,

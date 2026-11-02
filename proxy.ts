@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { redis } from "./lib/redis"
 import { nanoid } from "nanoid"
-import { pendingKeyFor } from "./lib/room"
+import { MAX_ROOM_PARTICIPANTS, pendingKeyFor } from "./lib/room"
 
 const PRESENCE_TIMEOUT_MS = 60000
 /**
@@ -175,7 +175,7 @@ export const proxy = async (req: NextRequest) => {
     ])
   }
 
-  if (activeTokens.size >= 2) {
+  if (activeTokens.size >= MAX_ROOM_PARTICIPANTS) {
     return NextResponse.redirect(new URL("/?error=room-full", req.url))
   }
 
