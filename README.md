@@ -48,6 +48,14 @@ Elysia.
   blips the client resyncs on reconnect, on tab focus and — while the
   transport stays down (the provider gives up after 5 reconnect attempts)
   — falls back to a 10s REST poll until the stream recovers
+- Realtime replay has two layers. Every SSE connection replays the
+  channel's buffered stream server-side (`XRANGE` since the client's last
+  ack), which closes gaps across the provider's routine connection
+  rotations; each room's stream is trimmed to the last 50 events and
+  expires after one hour (`history` config), so anything missed beyond
+  that window is covered by the REST resync/poll instead — the two
+  layers bound together: narrow gaps replay natively, wide ones converge
+  via REST
 - Server-side logging: an app-root error handler prints every unhandled 500
   with its stack, and security seams (creates, joins, flood gates) emit
   structured events; the level filters output
