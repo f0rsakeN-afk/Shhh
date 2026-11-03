@@ -28,17 +28,36 @@ const csp = [
 const nextConfig: NextConfig = {
   reactCompiler: true,
   async headers() {
+    const securityHeaders = [
+      {
+        key: "Content-Security-Policy",
+        value: csp,
+      },
+      // Standard hardening alongside the CSP (which already pins
+      // frame-ancestors 'none', only held for legacy user agents).
+      { key: "X-Content-Type-Options", value: "nosniff" },
+      { key: "X-Frame-Options", value: "DENY" },
+      // Origin-only cross-site: keyword names must never ride an external
+      // Referer header into another site's logs.
+      { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+      // The app uses no powerful features; close them all explicitly.
+      {
+        key: "Permissions-Policy",
+        value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+      },
+      { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+      { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
+      {
+        key: "Strict-Transport-Security",
+        value: "max-age=31536000; includeSubDomains",
+      },
+    ]
     return [
       {
         source: "/:path*",
-        headers: [
-          {
-            key: "Content-Security-Policy",
-            value: csp,
-          },
-        ],
+        headers: securityHeaders,
       },
-    ];
+    ]
   },
 };
 

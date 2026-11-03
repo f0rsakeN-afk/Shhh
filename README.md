@@ -31,11 +31,16 @@ Elysia.
   layers can never disagree about capacity
 - Only the author or sender of a message can edit, delete or read-receipt its
   own side; foreign tokens get 403, and delete broadcasts strip the author
-  token before fanning out
+  token before fanning out. Edits are further bounded to `EDIT_WINDOW_MS`
+  (5 minutes) after sending, so a late reader can trust what they saw — the
+  client hides the affordance and the server enforces the same constant
 - One reaction per user per message, enforced server-authoritatively: the
   full merge result travels to all participants, so racing clicks converge
 - Content-Security-Policy locks the app to its own origins; emojis are
-  rendered natively, no third-party images
+  rendered natively, no third-party images. The CSP ships with the standard
+  companion set — `nosniff`, `X-Frame-Options: DENY`, a strict referrer
+  policy, `Permissions-Policy` closing unused device APIs, COOP/CORP
+  `same-origin`, and HSTS
 - Message posting is flood-controlled per token: a fixed window caps bursts
   at 8 messages per 5 seconds, 429 otherwise
 - Sessions self-heal: if the proxy recycles a token, API calls 401 and the

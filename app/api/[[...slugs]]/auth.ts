@@ -57,6 +57,12 @@ export function emptyUsername(set: SetBox) {
   return { error: "Pick a non-empty name" }
 }
 
+/** The author tried to edit a message past the bounded edit window. */
+export function editWindowClosed(set: SetBox) {
+  set.status = 403
+  return { error: "Edits are only possible in the first few minutes after sending" }
+}
+
 /** The room already holds its maximum number of joined participants. */
 export function roomFull(set: SetBox) {
   set.status = 403

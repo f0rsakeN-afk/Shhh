@@ -23,7 +23,7 @@ import { ConnectionNotification } from "@/components/connection-notification"
 import { JoinRoomScreen } from "@/components/join-room-screen"
 import { Spinner } from "@/components/ui/spinner"
 import { toastError, toastSuccess } from "@/lib/toast"
-import { requireOk, isSessionStale, isThrottled } from "@/lib/api-error"
+import { ApiError, requireOk, isSessionStale, isThrottled } from "@/lib/api-error"
 import { notifyIfHidden } from "@/lib/notify"
 import { cn } from "@/lib/utils"
 import type { Message } from "@/lib/schemas"
@@ -261,14 +261,26 @@ const Page = () => {
       return requireOk<{ success: boolean }>(res, "Could not save the edit")
     },
     onError: (err) => {
-      // The editing banner stays open so the user can simply retry.
+      // The editing banner stays open so the user can simply retry — except
+      // for the edit window closing, where retrying can never succeed.
+      if (isSessionStale(err)) {
+        toastError({
+          title: "Session expired",
+          description: "Refresh the page to rejoin, then try again.",
+        })
+        return
+      }
+      if (err instanceof ApiError && err.status === 403) {
+        toastError({
+          title: "Could not save the edit",
+          description: "The message is unchanged; edits closed after a few minutes.",
+        })
+        setEditing(null)
+        return
+      }
       toastError({
-        title: isSessionStale(err)
-          ? "Session expired"
-          : "Could not save the edit",
-        description: isSessionStale(err)
-          ? "Refresh the page to rejoin, then try again."
-          : "The message is unchanged; you can retry.",
+        title: "Could not save the edit",
+        description: "The message is unchanged; you can retry.",
       })
     },
     onSuccess: (_, { messageId, text }) => {

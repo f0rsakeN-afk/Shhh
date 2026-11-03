@@ -4,6 +4,7 @@ import { memo, useCallback } from "react"
 import { Trash2 } from "lucide-react"
 import { format } from "date-fns"
 import { Message } from "@/lib/schemas"
+import { EDIT_WINDOW_MS } from "@/lib/room"
 import { MessageReactions } from "./message-reactions"
 import { ReadReceiptIndicator } from "./read-receipt"
 import { MessageActions } from "./message-actions"
@@ -65,8 +66,13 @@ export const MessageItem = memo(function MessageItem({
   }, [message.text])
 
   // Optimistic (temp-) messages are not server-owned yet, so they are not
-  // editable until confirmed; delete and copy stay available.
-  const canEdit = isOwnMessage && !message.id.startsWith("temp-")
+  // editable until confirmed; delete and copy stay available. Past the
+  // server's edit window the affordance hides too — the server still has
+  // the final say in case a stale render slips through.
+  const canEdit =
+    isOwnMessage &&
+    !message.id.startsWith("temp-") &&
+    Date.now() - message.timestamp <= EDIT_WINDOW_MS
 
   if (message.deleted) {
     return (

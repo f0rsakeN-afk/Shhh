@@ -9,6 +9,7 @@ import {
   tooManyRequests,
   emptyMessage,
   emptyUsername,
+  editWindowClosed,
   roomFull,
   nameTaken,
   floodGate,
@@ -22,7 +23,7 @@ import {
   type Message,
   type Reaction,
 } from "@/lib/schemas"
-import { MAX_ROOM_PARTICIPANTS, ROOM_TTL_SECONDS, pendingKeyFor } from "@/lib/room"
+import { EDIT_WINDOW_MS, MAX_ROOM_PARTICIPANTS, ROOM_TTL_SECONDS, pendingKeyFor } from "@/lib/room"
 import { sanitizeText, sanitizeUsername } from "@/lib/sanitize"
 import { createLogger, logger } from "@/lib/logger"
 
@@ -407,6 +408,10 @@ const messages = new Elysia({ prefix: "/messages" })
       }
       if (message.deleted) {
         return messageNotFound(set)
+      }
+      if (Date.now() - message.timestamp > EDIT_WINDOW_MS) {
+        log.warn("Edit rejected: window closed", { roomId, messageId, ageMs: Date.now() - message.timestamp })
+        return editWindowClosed(set)
       }
 
       const updatedMessage = { ...message, text: sanitizeText(text), edited: true }

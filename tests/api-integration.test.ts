@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { nanoid } from "nanoid"
 import { GET, POST, DELETE } from "@/app/api/[[...slugs]]/route"
 import { redis } from "@/lib/redis"
-import { MAX_ROOM_PARTICIPANTS } from "@/lib/room"
+import { MAX_ROOM_PARTICIPANTS, EDIT_WINDOW_MS } from "@/lib/room"
 import type { Message } from "@/lib/schemas"
 
 /**
@@ -316,6 +316,41 @@ integration("edit and delete ownership", () => {
     const tombstone = afterDelete.messages.find((m) => m.id === messageId)
     expect(tombstone?.deleted).toBe(true)
     expect(tombstone?.text).toBe("")
+  }, 60_000)
+
+  test("an edit past the window is rejected, even for the owner", async () => {
+    const created = await send(roomId, userA, "sent a while ago")
+    expect(created.status).toBe(200)
+
+    const current = await history(roomId, userA, "&limit=1")
+    const messageId = current.messages.at(-1)?.id as string
+    // Upstash auto-deserializes JSON values, but a raw-string response is
+    // still possible across client versions — accept both shapes.
+    const stored = await redis.hget<Message | string>(`msg:${roomId}`, messageId)
+    const parsed = typeof stored === "string" ? (JSON.parse(stored) as Message) : (stored as Message)
+
+    // Backdate the stored copy past EDIT_WINDOW_MS; the gate reads the
+    // stored timestamp, not anything the client sends.
+    await redis.hset(`msg:${roomId}`, {
+      [messageId]: JSON.stringify({
+        ...parsed,
+        timestamp: Date.now() - EDIT_WINDOW_MS - 1000,
+      }),
+    })
+
+    const late = await POST(new Request(`${BASE}/messages/edit?roomId=${roomId}`, {
+      method: "POST",
+      headers: tokenCookie(userA),
+      body: JSON.stringify({ messageId, text: "rewriting history" }),
+    }))
+    expect(late.status).toBe(403)
+    expect(((await late.json()) as { error?: string }).error).toContain("Edits")
+
+    // The transcript is untouched by the rejected write.
+    const after = await history(roomId, userB)
+    const unchanged = after.messages.find((m) => m.id === messageId)
+    expect(unchanged?.text).toBe("sent a while ago")
+    expect(unchanged?.edited).toBeUndefined()
   }, 60_000)
 })
 
