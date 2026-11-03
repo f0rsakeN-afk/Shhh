@@ -28,6 +28,8 @@ const csp = [
   process.env.NODE_ENV === "development"
     ? "connect-src 'self' ws://localhost:* ws://127.0.0.1:*"
     : "connect-src 'self'",
+  // Production is HTTPS-only (HSTS), so mixed-content upgrades are safe.
+  ...(process.env.NODE_ENV === "development" ? [] : ["upgrade-insecure-requests"]),
 ].join("; ");
 
 const nextConfig: NextConfig = {
@@ -52,16 +54,29 @@ const nextConfig: NextConfig = {
       },
       { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
       { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
+      { key: "X-Permitted-Cross-Domain-Policies", value: "none" },
       {
         key: "Strict-Transport-Security",
         value: "max-age=31536000; includeSubDomains",
       },
     ]
-    return [
+
+    // Ephemeral content must never be written to a browser, proxy, or CDN
+    // cache. Room documents and every API response carry no-store alongside
+    // the app-wide security headers.
+    const ephemeralHeaders = [
+      ...securityHeaders,
       {
-        source: "/:path*",
-        headers: securityHeaders,
+        key: "Cache-Control",
+        value: "no-store, no-cache, must-revalidate, max-age=0",
       },
+      { key: "Pragma", value: "no-cache" },
+    ]
+
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      { source: "/room/:path*", headers: ephemeralHeaders },
+      { source: "/api/:path*", headers: ephemeralHeaders },
     ]
   },
 };

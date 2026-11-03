@@ -128,6 +128,25 @@ integration("room join integrity", () => {
     expect(res.status).toBe(409)
   }, 20_000)
 
+  test("duplicate names collide case-insensitively", async () => {
+    const fresh = nanoid()
+    await registerRoom(roomId, [fresh, userA, userB])
+    const res = await join(roomId, fresh, "zArA", 2)
+    expect(res.status).toBe(409)
+  }, 20_000)
+
+  test("legacy plain-string participants still block impostor names", async () => {
+    const legacyToken = nanoid()
+    await registerRoom(roomId, [legacyToken, userA, userB])
+    // Pre-avatar records were stored as a bare username, not JSON.
+    await redis.hset(`users:${roomId}`, { [legacyToken]: "LegacyName" })
+
+    const fresh = nanoid()
+    await registerRoom(roomId, [fresh, userA, userB])
+    const res = await join(roomId, fresh, "legacyname", 2)
+    expect(res.status).toBe(409)
+  }, 20_000)
+
   test("capacity rejects joins past the participant ceiling", async () => {
     const filler: Record<string, string> = {}
     for (let i = 0; i < MAX_ROOM_PARTICIPANTS; i++) {
@@ -318,6 +337,24 @@ integration("edit and delete ownership", () => {
     expect(tombstone?.text).toBe("")
   }, 60_000)
 
+  test("an edit that sanitizes to nothing is rejected", async () => {
+    const created = await send(roomId, userA, "keep me")
+    expect(created.status).toBe(200)
+
+    const current = await history(roomId, userA, "&limit=1")
+    const messageId = current.messages.at(-1)?.id as string
+
+    const blanked = await POST(new Request(`${BASE}/messages/edit?roomId=${roomId}`, {
+      method: "POST",
+      headers: tokenCookie(userA),
+      body: JSON.stringify({ messageId, text: "<b>   </b>" }),
+    }))
+    expect(blanked.status).toBe(422)
+
+    const after = await history(roomId, userB)
+    expect(after.messages.find((m) => m.id === messageId)?.text).toBe("keep me")
+  }, 30_000)
+
   test("an edit past the window is rejected, even for the owner", async () => {
     const created = await send(roomId, userA, "sent a while ago")
     expect(created.status).toBe(200)
@@ -388,6 +425,24 @@ integration("room lifetime", () => {
     )
     expect(res.status).toBe(422)
   }, 20_000)
+})
+
+integration("request origin integrity", () => {
+  test("same-origin reads pass, cross-origin reads are 403", async () => {
+    const sameOrigin = await GET(
+      new Request(`${BASE}/messages?roomId=${roomId}&limit=1`, {
+        headers: { ...tokenCookie(userA), origin: "http://test.local" },
+      }),
+    )
+    expect(sameOrigin.status).toBe(200)
+
+    const crossOrigin = await GET(
+      new Request(`${BASE}/messages?roomId=${roomId}&limit=1`, {
+        headers: { ...tokenCookie(userA), origin: "http://evil.example" },
+      }),
+    )
+    expect(crossOrigin.status).toBe(403)
+  }, 30_000)
 })
 
 runOrSkip("cleanup", async () => {

@@ -76,3 +76,63 @@ export function isSessionStale(error: unknown): boolean {
 export function isThrottled(error: unknown): boolean {
   return error instanceof ApiError && error.status === 429
 }
+
+/**
+ * True for failures that happened before the server answered: the browser is
+ * offline, `fetch` rejected (DNS/connection reset), or our request timeout
+ * aborted a stalled call. These are retryable and must never be reported as
+ * a server rejection.
+ */
+export function isNetworkError(error: unknown): boolean {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return true
+  }
+  if (error instanceof TypeError) return true
+  if (typeof DOMException !== "undefined" && error instanceof DOMException) {
+    return error.name === "AbortError" || error.name === "TimeoutError"
+  }
+  return false
+}
+
+export interface ErrorCopy {
+  title: string
+  description: string
+}
+
+/**
+ * Friendly copy for a connectivity failure, or `null` when the error came
+ * from the server and the caller's own scene-specific copy should apply.
+ * Shared so every mutation reports offline and slow-network states the same
+ * way instead of drifting into eight variations of "failed".
+ */
+export function networkErrorCopy(error: unknown): ErrorCopy | null {
+  if (!isNetworkError(error)) return null
+
+  const offline =
+    typeof navigator !== "undefined" && navigator.onLine === false
+
+  if (offline) {
+    return {
+      title: "You're offline",
+      description:
+        "Your connection dropped. Nothing was sent — we'll be here when you're back online.",
+    }
+  }
+
+  const timedOut =
+    typeof DOMException !== "undefined" &&
+    error instanceof DOMException &&
+    (error.name === "AbortError" || error.name === "TimeoutError")
+
+  return timedOut
+    ? {
+        title: "Connection is too slow",
+        description:
+          "The request timed out. Check your signal and try again — nothing was changed.",
+      }
+    : {
+        title: "Connection problem",
+        description:
+          "We couldn't reach the server. Check your internet and try again.",
+      }
+}

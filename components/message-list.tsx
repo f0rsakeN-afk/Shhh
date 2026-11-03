@@ -2,7 +2,7 @@
 
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { ArrowDown, ChevronUp, MessageCircle, SearchX } from "lucide-react"
-import { format } from "date-fns"
+import { formatMonthDay } from "@/lib/format-time"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Empty,
@@ -40,7 +40,7 @@ function formatSeparationDate(timestamp: number): string {
 
   if (date.toDateString() === now.toDateString()) return "Today"
   if (date.toDateString() === yesterday.toDateString()) return "Yesterday"
-  return format(date, "MMMM d")
+  return formatMonthDay(timestamp)
 }
 
 export const MessageList = memo(function MessageList({

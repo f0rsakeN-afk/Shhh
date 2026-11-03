@@ -4,6 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { RealtimeProvider } from "@upstash/realtime/client"
 import { useState } from "react"
 import { ToastProvider } from "@/components/toast-provider"
+import { NetworkStatus } from "@/components/network-status"
+import { isNetworkError } from "@/lib/api-error"
 
 export const Providers = ({ children }: { children: React.ReactNode }) => {
   // Tuned for a realtime app: data arrives over chat events, so TanStack
@@ -16,7 +18,13 @@ export const Providers = ({ children }: { children: React.ReactNode }) => {
           queries: {
             staleTime: 30_000,
             refetchOnWindowFocus: false,
-            retry: false,
+            // Reads are idempotent, so a flaky link gets two bounded
+            // retries with backoff. Mutations stay at zero: re-sending a
+            // message automatically would duplicate it.
+            retry: (failureCount, error) =>
+              failureCount < 2 && isNetworkError(error),
+            retryDelay: (attempt) =>
+              Math.min(1_000 * 2 ** attempt, 8_000),
           },
           mutations: {
             retry: false,
@@ -33,6 +41,7 @@ export const Providers = ({ children }: { children: React.ReactNode }) => {
       <QueryClientProvider client={queryClient}>
         {children}
         <ToastProvider />
+        <NetworkStatus />
       </QueryClientProvider>
     </RealtimeProvider>
   )

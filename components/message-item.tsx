@@ -2,7 +2,7 @@
 
 import { memo, useCallback, Fragment } from "react"
 import { Trash2 } from "lucide-react"
-import { format } from "date-fns"
+import { formatClock } from "@/lib/format-time"
 import { Message } from "@/lib/schemas"
 import { splitMentions } from "@/lib/mentions"
 import { EDIT_WINDOW_MS } from "@/lib/room"
@@ -118,7 +118,7 @@ export const MessageItem = memo(function MessageItem({
               {displaySender}
             </span>
             <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
-              {format(message.timestamp, "HH:mm")}
+              {formatClock(message.timestamp)}
             </span>
           </div>
         )}
@@ -180,7 +180,7 @@ export const MessageItem = memo(function MessageItem({
       >
         {isOwnMessage && (
           <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-            {format(message.timestamp, "HH:mm")}
+            {formatClock(message.timestamp)}
           </span>
         )}
 

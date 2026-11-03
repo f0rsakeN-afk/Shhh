@@ -1,7 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
 import { redis } from "./lib/redis"
 import { nanoid } from "nanoid"
-import { MAX_ROOM_PARTICIPANTS, pendingKeyFor } from "./lib/room"
+import {
+  MAX_ROOM_PARTICIPANTS,
+  ROOM_ID_RE,
+  pendingKeyFor,
+} from "./lib/room"
+import {
+  parsePresence,
+  toFiniteNumber,
+  toStringArray,
+} from "./lib/parse"
 
 const PRESENCE_TIMEOUT_MS = 60000
 /**
@@ -90,23 +99,25 @@ export const proxy = async (req: NextRequest) => {
 
   const roomId = roomMatch[1]
 
-  const meta = await redis.hgetall<{ connected: string | string[]; createdAt: string | number }>(
-    `meta:${roomId}`
+  // Validate before the id becomes part of a Redis key: malformed or
+  // oversized path segments must never reach the store.
+  if (!ROOM_ID_RE.test(roomId)) {
+    return NextResponse.redirect(new URL("/?error=room-not-found", req.url))
+  }
+
+  const meta = await redis.hgetall<{ connected: unknown; createdAt: unknown }>(
+    `meta:${roomId}`,
   )
 
   if (!meta) {
     return NextResponse.redirect(new URL("/?error=room-not-found", req.url))
   }
 
-  const connected: string[] = Array.isArray(meta.connected)
-    ? meta.connected
-    : typeof meta.connected === "string"
-      ? JSON.parse(meta.connected)
-      : []
+  const connected = toStringArray(meta.connected)
 
   const [presenceData, usersData, pendingData] = await Promise.all([
-    redis.hgetall<Record<string, string | { username: string; lastSeen: number }>>(`presence:${roomId}`),
-    redis.hgetall<Record<string, string>>(`users:${roomId}`),
+    redis.hgetall<Record<string, unknown>>(`presence:${roomId}`),
+    redis.hgetall<Record<string, unknown>>(`users:${roomId}`),
     // This client version returns a flat alternating array: member, score, member, score, ...
     redis.zrange<Array<string | number>>(pendingKeyFor(roomId), 0, -1, { withScores: true }),
   ])
@@ -142,18 +153,17 @@ export const proxy = async (req: NextRequest) => {
       continue
     }
 
-    const presence = presenceData?.[token]
+    const presence = parsePresence(presenceData?.[token])
     if (presence) {
-      const parsed = typeof presence === "string" ? JSON.parse(presence) : presence
-      const isActive = now - parsed.lastSeen < PRESENCE_TIMEOUT_MS
+      const isActive = now - presence.lastSeen < PRESENCE_TIMEOUT_MS
       if (isActive) {
         activeTokens.add(token)
       } else {
         staleTokens.push(token)
       }
     } else {
-      const roomCreatedAt = typeof meta.createdAt === "string" ? parseInt(meta.createdAt) : meta.createdAt
-      const roomAge = now - (roomCreatedAt || now)
+      const roomCreatedAt = toFiniteNumber(meta.createdAt, now)
+      const roomAge = now - roomCreatedAt
       if (roomAge > PRESENCE_TIMEOUT_MS * 2) {
         staleTokens.push(token)
       } else {

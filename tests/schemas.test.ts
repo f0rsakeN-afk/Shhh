@@ -6,8 +6,9 @@ import {
   createRoomBodySchema,
   editMessageBodySchema,
   roomDurationSchema,
+  messageSchema,
 } from "@/lib/schemas"
-import { roomDurationSeconds } from "@/lib/room"
+import { roomDurationSeconds, isValidRoomId } from "@/lib/room"
 
 describe("roomIdQuerySchema", () => {
   test("accepts nanoid-shaped room ids", () => {
@@ -88,5 +89,44 @@ describe("roomDurationSeconds", () => {
     expect(roomDurationSeconds("24h")).toBe(24 * 60 * 60)
     expect(roomDurationSeconds()).toBe(60 * 60)
     expect(roomDurationSeconds(null)).toBe(60 * 60)
+  })
+})
+
+describe("isValidRoomId", () => {
+  test("accepts slug-shaped ids and rejects everything else", () => {
+    expect(isValidRoomId("abcdefghij")).toBe(true)
+    expect(isValidRoomId("aA1-_Zz9x-1")).toBe(true)
+    expect(isValidRoomId("short")).toBe(false)
+    expect(isValidRoomId("has spaces")).toBe(false)
+    expect(isValidRoomId("../admin")).toBe(false)
+    expect(isValidRoomId(42)).toBe(false)
+  })
+})
+
+describe("messageSchema at the storage boundary", () => {
+  const valid = {
+    id: "m1",
+    sender: "Zara",
+    text: "hello",
+    timestamp: 1,
+    roomId: "abcdefghij",
+  }
+
+  test("accepts a well-formed stored message", () => {
+    expect(messageSchema.safeParse(valid).success).toBe(true)
+    expect(
+      messageSchema.safeParse({
+        ...valid,
+        reactions: [{ emoji: "👍", username: "Sam", timestamp: 2 }],
+      }).success,
+    ).toBe(true)
+  })
+
+  test("rejects malformed or unbounded stored values", () => {
+    expect(messageSchema.safeParse({ ...valid, roomId: "../bad" }).success).toBe(false)
+    expect(messageSchema.safeParse({ ...valid, sender: "" }).success).toBe(false)
+    expect(messageSchema.safeParse({ ...valid, timestamp: -1 }).success).toBe(false)
+    expect(messageSchema.safeParse({ ...valid, text: "x".repeat(1001) }).success).toBe(false)
+    expect(messageSchema.safeParse({ ...valid, avatar: 12 }).success).toBe(false)
   })
 })

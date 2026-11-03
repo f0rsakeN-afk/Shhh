@@ -19,7 +19,6 @@
     "@upstash/redis": "^1.40.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "date-fns": "^4.4.0",
     "elysia": "^1.4.30",
     "emoji-picker-react": "^5.1.4",
     "lucide-react": "^0.561.0",

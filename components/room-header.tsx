@@ -1,8 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Bomb, Check, Copy, Link2, QrCode } from "lucide-react"
-import encodeQR from "@paulmillr/qr"
 import { Brand } from "@/components/brand"
 import { ThemeToggle } from "@/components/theme-toggle"
 import {
@@ -24,6 +23,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { CountdownTimer } from "./countdown-timer"
+import { Spinner } from "@/components/ui/spinner"
 import { toastError, toastSuccess } from "@/lib/toast"
 import { cn } from "@/lib/utils"
 
@@ -47,18 +47,33 @@ export function RoomHeader({
 }: RoomHeaderProps) {
   const [copied, setCopied] = useState<"id" | "link" | null>(null)
   const [qrOpen, setQrOpen] = useState(false)
+  const [qrSvg, setQrSvg] = useState("")
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Generated lazily only when the dialog opens, at the smallest module
-  // scale (CSS sizes the SVG), so the ~24KB markup never rides the initial
-  // page payload or every header re-render.
-  const qrSvg = useMemo(
-    () =>
-      qrOpen
-        ? encodeQR(roomUrl, "svg", { ecc: "medium", border: 1, scale: 1 })
-        : "",
-    [qrOpen, roomUrl],
-  )
+  // The encoder is code-split rather than imported at module scope: most
+  // room visits never open the dialog, so @paulmillr/qr stays out of the
+  // room bundle entirely and is fetched only on first open. The SVG is
+  // generated at the smallest module scale (CSS does the sizing), so the
+  // ~24KB markup is created once and then reused while reopenings happen.
+  useEffect(() => {
+    if (!qrOpen) return
+
+    let cancelled = false
+    void import("@paulmillr/qr")
+      .then(({ default: encodeQR }) => {
+        if (cancelled) return
+        setQrSvg(
+          encodeQR(roomUrl, "svg", { ecc: "medium", border: 1, scale: 1 }),
+        )
+      })
+      .catch(() => {
+        if (!cancelled) setQrSvg("")
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [qrOpen, roomUrl])
 
   useEffect(() => {
     return () => {
@@ -179,12 +194,15 @@ export function RoomHeader({
                   {/* Black on white regardless of theme: cameras read the
                       canonical polarity best and the SVG has no theme
                       awareness. */}
-                  <div
-                    className="w-full max-w-[240px] rounded-lg border border-line bg-white p-3 [&_svg]:h-auto [&_svg]:w-full [&_rect]:fill-black"
-                    // Library-generated SVG from our own room URL; no
-                    // user-controlled markup reaches this sink.
-                    dangerouslySetInnerHTML={{ __html: qrSvg }}
-                  />
+                  <div className="grid aspect-square w-full max-w-[240px] place-items-center rounded-lg border border-line bg-white p-3 [&_svg]:h-auto [&_svg]:w-full [&_rect]:fill-black">
+                    {qrSvg ? (
+                      // Library-generated SVG from our own room URL; no
+                      // user-controlled markup reaches this sink.
+                      <div className="w-full" dangerouslySetInnerHTML={{ __html: qrSvg }} />
+                    ) : (
+                      <Spinner className="size-5 text-black/40" />
+                    )}
+                  </div>
                   <code className="max-w-full break-all px-2 text-center font-mono text-[11px] text-muted-foreground">
                     {roomUrl}
                   </code>

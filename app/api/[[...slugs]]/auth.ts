@@ -1,10 +1,25 @@
 import { redis } from "@/lib/redis"
+import { ROOM_ID_RE } from "@/lib/room"
+import { parseUserRecord, toStringArray } from "@/lib/parse"
 import Elysia from "elysia"
 
 class AuthError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "AuthError"
+  }
+}
+
+/**
+ * A browser sent the request from a different origin than the one serving
+ * the app. SameSite=strict already keeps the cookie home on cross-site
+ * navigations; this catches the residual class (weakened SameSite settings,
+ * browser quirks, non-browser clients replaying a stolen cookie).
+ */
+class CrossOriginError extends Error {
+  constructor() {
+    super("Cross-origin request rejected")
+    this.name = "CrossOriginError"
   }
 }
 
@@ -104,7 +119,7 @@ export async function floodGate(
 }
 
 export const authMiddleware = new Elysia({ name: "auth" })
-  .error({ AuthError })
+  .error({ AuthError, CrossOriginError })
   // Scoped: every router that uses this middleware also inherits the handler,
   // so a thrown AuthError becomes a proper 401 rather than a 500.
   .onError({ as: "scoped" }, ({ code, set }) => {
@@ -112,14 +127,19 @@ export const authMiddleware = new Elysia({ name: "auth" })
       set.status = 401
       return { error: "Unauthorized" }
     }
+    if (code === "CrossOriginError") {
+      set.status = 403
+      return { error: "Forbidden" }
+    }
   })
-  .derive({ as: "scoped" }, async ({ query, cookie }) => {
+  .derive({ as: "scoped" }, async ({ query, cookie, request }) => {
     const roomId = query.roomId
     // The cookie jar can omit entries entirely; defensive access keeps a
     // malformed request from crashing the middleware instead of 401-ing.
-    const token = (
+    const rawToken = (
       cookie as Readonly<Record<string, { value?: unknown }> | undefined>
-    )?.["x-auth-token"]?.value as string | undefined
+    )?.["x-auth-token"]?.value
+    const token = typeof rawToken === "string" ? rawToken : undefined
 
     if (!roomId || !token) {
       throw new AuthError("Missing roomId or token.")
@@ -127,16 +147,30 @@ export const authMiddleware = new Elysia({ name: "auth" })
 
     // Room ids are short slugs; anything longer or oddly shaped is not a
     // room and must not become an unbounded Redis key suffix.
-    if (!/^[A-Za-z0-9_-]{8,64}$/.test(roomId)) {
+    if (!ROOM_ID_RE.test(roomId)) {
       throw new AuthError("Malformed roomId")
     }
 
-    const connectedRaw = await redis.hget<string | string[]>(`meta:${roomId}`, "connected")
-    const connected = Array.isArray(connectedRaw)
-      ? connectedRaw
-      : connectedRaw
-        ? JSON.parse(connectedRaw)
-        : []
+    // CSRF defense in depth: browsers attach Origin to state-changing
+    // requests. A present-but-different origin is never legitimate. Missing
+    // Origin is allowed because the integration tests and curl have none.
+    const origin = request.headers.get("origin")
+    if (origin) {
+      let originHost: string
+      try {
+        originHost = new URL(origin).host
+      } catch {
+        throw new CrossOriginError()
+      }
+      const expectedHost =
+        request.headers.get("host") ?? new URL(request.url).host
+      if (originHost !== expectedHost) {
+        throw new CrossOriginError()
+      }
+    }
+
+    const connectedRaw = await redis.hget<unknown>(`meta:${roomId}`, "connected")
+    const connected = toStringArray(connectedRaw)
 
     if (!connected.includes(token)) {
       throw new AuthError("Invalid token")
@@ -145,39 +179,15 @@ export const authMiddleware = new Elysia({ name: "auth" })
     // Identity is resolved from the token, never from request bodies.
     // Fresh tokens that have not joined yet yield no user; routes that
     // need one handle that case themselves.
-    const userData = await redis.hget<
-      string | { username?: unknown; avatar?: unknown } | null
-    >(`users:${roomId}`, token)
-
-    let username: string | undefined
-    let avatar: number | undefined
-
-    if (typeof userData === "string") {
-      try {
-        const parsed = JSON.parse(userData)
-        if (typeof parsed?.username === "string") {
-          username = parsed.username
-        }
-        if (Number.isInteger(parsed?.avatar)) {
-          avatar = parsed.avatar as number
-        }
-      } catch {
-        // Pre-avatar joins stored a plain username string.
-        if (userData.trim()) username = userData
-      }
-    } else if (userData && typeof userData.username === "string") {
-      username = userData.username
-      if (Number.isInteger(userData.avatar)) {
-        avatar = userData.avatar as number
-      }
-    }
+    const userData = await redis.hget<unknown>(`users:${roomId}`, token)
+    const user = parseUserRecord(userData)
 
     return {
       auth: {
         roomId,
         token,
         connected,
-        user: username ? { username, avatar } : null,
+        user: user ? { username: user.username, avatar: user.avatar } : null,
       },
     }
   })

@@ -1,26 +1,39 @@
 import { z } from "zod"
+import { ROOM_ID_RE } from "@/lib/room"
+
+/**
+ * Reusable scalar bounds. Every field that can enter storage or a render is
+ * capped here, so an oversized payload is rejected at the edge instead of
+ * becoming an oversized Redis value or a layout-breaking string.
+ */
+const id = z.string().min(1).max(64)
+const username = z.string().min(1).max(24)
+/** A reaction chip is a grapheme cluster; 16 code units is generous. */
+const emoji = z.string().min(1).max(16)
+const messageText = z.string().max(1000)
+const timestamp = z.number().int().nonnegative()
 
 export const reactionSchema = z.object({
-  emoji: z.string(),
-  username: z.string(),
-  timestamp: z.number(),
+  emoji,
+  username,
+  timestamp,
 })
 
 export const readReceiptSchema = z.object({
-  username: z.string(),
-  timestamp: z.number(),
+  username,
+  timestamp,
 })
 
 export const messageSchema = z.object({
-  id: z.string(),
-  sender: z.string(),
-  text: z.string(),
-  timestamp: z.number(),
-  roomId: z.string(),
-  token: z.string().optional(),
-  avatar: z.number().optional(),
-  reactions: z.array(reactionSchema).optional(),
-  readBy: z.array(readReceiptSchema).optional(),
+  id,
+  sender: username,
+  text: messageText,
+  timestamp,
+  roomId: z.string().regex(ROOM_ID_RE),
+  token: z.string().max(64).optional(),
+  avatar: z.number().int().min(0).max(9).optional(),
+  reactions: z.array(reactionSchema).max(100).optional(),
+  readBy: z.array(readReceiptSchema).max(100).optional(),
   edited: z.boolean().optional(),
   deleted: z.boolean().optional(),
 })
@@ -32,12 +45,12 @@ export const chatDestroySchema = z.object({
 export const roomIdQuerySchema = z.object({
   // Room ids are nanoid-sized slugs; bounding the shape keeps an arbitrary
   // string from becoming an unbounded Redis key suffix.
-  roomId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+  roomId: z.string().regex(ROOM_ID_RE),
 })
 
 /** History pagination: newest page by default, or continue below `before`. */
 export const messagesQuerySchema = z.object({
-  roomId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+  roomId: z.string().regex(ROOM_ID_RE),
   before: z.coerce.number().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   limit: z.coerce.number().min(1).max(200).optional(),
 })

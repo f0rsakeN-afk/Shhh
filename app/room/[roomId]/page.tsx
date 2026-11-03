@@ -23,7 +23,7 @@ import { ConnectionNotification } from "@/components/connection-notification"
 import { JoinRoomScreen } from "@/components/join-room-screen"
 import { Spinner } from "@/components/ui/spinner"
 import { toastError, toastSuccess } from "@/lib/toast"
-import { ApiError, requireOk, isSessionStale, isThrottled } from "@/lib/api-error"
+import { ApiError, requireOk, isSessionStale, isThrottled, networkErrorCopy } from "@/lib/api-error"
 import { notifyIfHidden } from "@/lib/notify"
 import {
   bumpUnread,
@@ -197,11 +197,13 @@ const Page = () => {
         return [...pageOldestFirst, ...prev]
       })
       setHasOlderMessages(page.hasMore)
-    } catch {
-      toastError({
-        title: "Could not load earlier messages",
-        description: "Try again in a moment.",
-      })
+    } catch (err) {
+      toastError(
+        networkErrorCopy(err) ?? {
+          title: "Could not load earlier messages",
+          description: "Try again in a moment.",
+        },
+      )
     } finally {
       setIsEarlierLoading(false)
     }
@@ -240,6 +242,19 @@ const Page = () => {
       if (context?.previousMessages) {
         queryClient.setQueryData(["messages", roomId], context.previousMessages)
       }
+      // Connectivity failures keep the typed text visible in the toast so it
+      // can be copied/rescued; server rejections use scene-specific copy.
+      const network = networkErrorCopy(err)
+      if (network) {
+        toastError({
+          ...network,
+          description:
+            variables.text.length > 80
+              ? `${network.description} Your message: ${variables.text.slice(0, 80)}…`
+              : `${network.description} Your message: ${variables.text}`,
+        })
+        return
+      }
       // Surface the undelivered text so nothing feels silently swallowed.
       toastError({
         title: isSessionStale(err)
@@ -269,6 +284,11 @@ const Page = () => {
     onError: (err) => {
       // The editing banner stays open so the user can simply retry — except
       // for the edit window closing, where retrying can never succeed.
+      const network = networkErrorCopy(err)
+      if (network) {
+        toastError(network)
+        return
+      }
       if (isSessionStale(err)) {
         toastError({
           title: "Session expired",
@@ -314,6 +334,11 @@ const Page = () => {
       router.push("/?room=expired")
     },
     onError: (err) => {
+      const network = networkErrorCopy(err)
+      if (network) {
+        toastError(network)
+        return
+      }
       toastError({
         title: isSessionStale(err) ? "Session expired" : "Could not destroy the room",
         description: isSessionStale(err)
@@ -334,6 +359,11 @@ const Page = () => {
       setHasJoined(true)
     },
     onError: (err) => {
+      const network = networkErrorCopy(err)
+      if (network) {
+        toastError(network)
+        return
+      }
       toastError({
         title: isSessionStale(err)
           ? "Your invite slot expired"
@@ -409,6 +439,11 @@ const Page = () => {
       if (context?.previous) {
         queryClient.setQueryData(["messages", roomId], context.previous)
       }
+      const network = networkErrorCopy(err)
+      if (network) {
+        toastError(network)
+        return
+      }
       toastError({
         title: isSessionStale(err) ? "Session expired" : "Reaction failed",
         description: isSessionStale(err)
@@ -453,6 +488,11 @@ const Page = () => {
       return requireOk<{ success: boolean }>(res, "Could not delete the message")
     },
     onError: (err) => {
+      const network = networkErrorCopy(err)
+      if (network) {
+        toastError(network)
+        return
+      }
       toastError({
         title: isSessionStale(err) ? "Session expired" : "Could not delete the message",
         description: isSessionStale(err)
@@ -772,12 +812,17 @@ const Page = () => {
       if (document.visibilityState !== "visible") return
       clearUnread()
       queryClient.invalidateQueries({ queryKey: ["messages", roomId] })
+      queryClient.invalidateQueries({ queryKey: ["presence", roomId] })
     }
+    // `online` also resyncs: events emitted while the link was down were
+    // never delivered, and the realtime stream may still be reconnecting.
     document.addEventListener("visibilitychange", resync)
     window.addEventListener("focus", resync)
+    window.addEventListener("online", resync)
     return () => {
       document.removeEventListener("visibilitychange", resync)
       window.removeEventListener("focus", resync)
+      window.removeEventListener("online", resync)
     }
   }, [hasJoined, roomId, queryClient])
 

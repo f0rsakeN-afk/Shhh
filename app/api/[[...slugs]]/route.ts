@@ -19,11 +19,18 @@ import {
   roomIdQuerySchema,
   messagesQuerySchema,
   createMessageBodySchema,
-  createRoomBodySchema,
   editMessageBodySchema,
+  messageSchema,
   type Message,
   type Reaction,
 } from "@/lib/schemas"
+import {
+  parsePresence,
+  parseUserRecord,
+  safeJsonParse,
+  toFiniteNumber,
+  toStringArray,
+} from "@/lib/parse"
 import {
   DEFAULT_ROOM_DURATION,
   EDIT_WINDOW_MS,
@@ -58,6 +65,35 @@ const createRoomBody = t.Optional(
   }),
 )
 
+/**
+ * Response shape for a stored message. Declaring it (instead of returning
+ * `t.Unknown`) keeps Eden's inferred type aligned with the zod `Message`, so
+ * the client gets real checking on every field the transcript renders.
+ */
+const messageResponse = t.Object({
+  id: t.String(),
+  sender: t.String(),
+  text: t.String(),
+  timestamp: t.Number(),
+  roomId: t.String(),
+  token: t.Optional(t.String()),
+  avatar: t.Optional(t.Number()),
+  reactions: t.Optional(
+    t.Array(
+      t.Object({
+        emoji: t.String(),
+        username: t.String(),
+        timestamp: t.Number(),
+      }),
+    ),
+  ),
+  readBy: t.Optional(
+    t.Array(t.Object({ username: t.String(), timestamp: t.Number() })),
+  ),
+  edited: t.Optional(t.Boolean()),
+  deleted: t.Optional(t.Boolean()),
+})
+
 // Message model: a HASH gives O(1) point reads/writes per message id (used
 // by reactions, receipts, edits and deletes) and a ZSET keeps the transcript
 // ordered by timestamp so history loads never scan or reorder data.
@@ -73,14 +109,12 @@ type StoredMessage = string | Message | null
 
 function parseStoredMessage(raw: StoredMessage): Message | null {
   if (raw === null || raw === undefined) return null
-  if (typeof raw === "string") {
-    try {
-      return JSON.parse(raw) as Message
-    } catch {
-      return null
-    }
-  }
-  return raw
+  const parsed = typeof raw === "string" ? safeJsonParse<unknown>(raw) : raw
+  // Validate at the storage boundary: a corrupted or hand-edited hash value
+  // must degrade to "missing message", never flow into the transcript as a
+  // half-shaped object the client assumes is a Message.
+  const result = messageSchema.safeParse(parsed)
+  return result.success ? result.data : null
 }
 
 async function readMessage(roomId: string, messageId: string): Promise<Message | null> {
@@ -101,31 +135,55 @@ async function retainRoomTtl(roomId: string, keys: string[]): Promise<void> {
 }
 
 // Coarse sliding-window memory of room creations per caller IP, for the
-// flood guard below. In-memory is enough at this app's scale.
+// flood guard below. In-memory is enough at this app's scale. A global
+// ceiling sits alongside the per-IP limit so rotating/spoofed forwarding
+// headers still cannot mint unbounded rooms on one instance.
 const recentCreations = new Map<string, number[]>()
+const CREATE_WINDOW_MS = 60_000
+const CREATE_PER_IP_MAX = 5
+const CREATE_GLOBAL_MAX = 120
+let globalCreations: number[] = []
+
+/**
+ * Best-effort caller identity for rate limiting. `x-forwarded-for` is the
+ * platform-provided client hop on Vercel; `x-real-ip` covers common
+ * self-hosted proxies. Values are truncated so a hostile header cannot turn
+ * the in-memory map key into an unbounded string.
+ */
+function clientIp(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+  const real = request.headers.get("x-real-ip")?.trim()
+  return (forwarded || real || "local").slice(0, 64)
+}
 
 const rooms = new Elysia({ prefix: "/room" })
   .post("/create", async ({ body, request, set }) => {
-    const ip =
-      (request.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() ||
-      "local"
+    const ip = clientIp(request)
     const now = Date.now()
-    const WINDOW_MS = 60_000
-    const WINDOW_MAX = 5
 
     const hits = (recentCreations.get(ip) ?? []).filter(
-      (t) => now - t < WINDOW_MS,
+      (hit) => now - hit < CREATE_WINDOW_MS,
     )
-    if (hits.length >= WINDOW_MAX) {
+    if (hits.length >= CREATE_PER_IP_MAX) {
       log.warn("Room create rate limited", { ip })
       return tooManyRequests(set)
     }
+
+    globalCreations = globalCreations.filter(
+      (hit) => now - hit < CREATE_WINDOW_MS,
+    )
+    if (globalCreations.length >= CREATE_GLOBAL_MAX) {
+      log.warn("Room create rate limited globally", { ip })
+      return tooManyRequests(set)
+    }
+
     hits.push(now)
     recentCreations.set(ip, hits)
+    globalCreations.push(now)
     if (recentCreations.size > 500) {
-      for (const [ip, times] of recentCreations) {
-        if (!times.some((t) => now - t < WINDOW_MS)) {
-          recentCreations.delete(ip)
+      for (const [key, times] of recentCreations) {
+        if (!times.some((hit) => now - hit < CREATE_WINDOW_MS)) {
+          recentCreations.delete(key)
         }
       }
     }
@@ -165,45 +223,28 @@ const rooms = new Elysia({ prefix: "/room" })
         return { exists: false, isFull: false, ttl: 0 }
       }
 
-      const connectedRaw = await redis.hget<string | string[]>(`meta:${roomId}`, "connected")
-      const connected: string[] = Array.isArray(connectedRaw) 
-        ? connectedRaw 
-        : connectedRaw 
-          ? JSON.parse(connectedRaw) 
-          : []
+      const connectedRaw = await redis.hget<unknown>(`meta:${roomId}`, "connected")
+      const connected = toStringArray(connectedRaw)
 
       const [presenceData, usersData] = await Promise.all([
-        redis.hgetall<Record<string, string | { username: string; lastSeen: number }>>(`presence:${roomId}`),
-        redis.hgetall<Record<string, string>>(`users:${roomId}`),
+        redis.hgetall<Record<string, unknown>>(`presence:${roomId}`),
+        redis.hgetall<Record<string, unknown>>(`users:${roomId}`),
       ])
 
       const now = Date.now()
+      const roomCreatedAt = toFiniteNumber(meta.createdAt, now)
       const activeTokens = new Set<string>()
 
       for (const token of connected) {
-        const hasUser = usersData?.[token]
-        if (!hasUser) continue
+        if (!usersData?.[token]) continue
 
-        const presence = presenceData?.[token]
+        const presence = parsePresence(presenceData?.[token])
         if (presence) {
-          const parsed = typeof presence === "string" ? JSON.parse(presence) : presence
-          const isActive = now - parsed.lastSeen < 60000
-          if (isActive) {
-            activeTokens.add(token)
-          }
-        } else {
-          let roomCreatedAt: number
-          if (typeof meta.createdAt === "string") {
-            roomCreatedAt = parseInt(meta.createdAt, 10)
-          } else if (typeof meta.createdAt === "number") {
-            roomCreatedAt = meta.createdAt
-          } else {
-            roomCreatedAt = now
-          }
-          const roomAge = now - roomCreatedAt
-          if (roomAge <= 120000) {
-            activeTokens.add(token)
-          }
+          if (now - presence.lastSeen < 60_000) activeTokens.add(token)
+        } else if (now - roomCreatedAt <= 120_000) {
+          // No heartbeat yet: a just-joined token is active for the same
+          // grace period the proxy grants a fresh handshake.
+          activeTokens.add(token)
         }
       }
 
@@ -240,15 +281,25 @@ const rooms = new Elysia({ prefix: "/room" })
 
       // One atomic decision: capacity (joined participants, not page loads),
       // re-join passthrough, and username uniqueness, so two parallel joins
-      // cannot both squeeze a colliding name in.
+      // cannot both squeeze a colliding name in. Names compare
+      // case-insensitively and cover the pre-avatar plain-string format, so
+      // a new joiner cannot impersonate an existing participant by case or
+      // by relying on legacy storage.
       const decision = await redis.eval<unknown[], number>(
         `local exists = redis.call('HEXISTS', KEYS[1], ARGV[1])
 if exists == 1 then return 1 end
 if tonumber(redis.call('HLEN', KEYS[1])) >= tonumber(ARGV[2]) then return 0 end
+local target = string.lower(ARGV[3])
 local vals = redis.call('HVALS', KEYS[1])
 for _, v in ipairs(vals) do
-  local ok, name = pcall(function() return cjson.decode(v).username end)
-  if ok and name == ARGV[3] then return -1 end
+  local ok, decoded = pcall(function() return cjson.decode(v) end)
+  local name = nil
+  if ok and type(decoded) == 'table' then
+    name = decoded.username
+  elseif type(v) == 'string' then
+    name = v
+  end
+  if type(name) == 'string' and string.lower(name) == target then return -1 end
 end
 redis.call('HSET', KEYS[1], ARGV[1], ARGV[4])
 return 1`,
@@ -413,7 +464,7 @@ const messages = new Elysia({ prefix: "/messages" })
   .post(
     "/edit",
     async ({ body, auth, set }) => {
-      const { messageId, text } = body
+      const { messageId } = body
       const { roomId, token } = auth
 
       const message = await readMessage(roomId, messageId)
@@ -434,7 +485,12 @@ const messages = new Elysia({ prefix: "/messages" })
         return editWindowClosed(set)
       }
 
-      const updatedMessage = { ...message, text: sanitizeText(text), edited: true }
+      const text = sanitizeText(body.text)
+      if (!text) {
+        return emptyMessage(set)
+      }
+
+      const updatedMessage = { ...message, text, edited: true }
       await writeMessage(roomId, updatedMessage)
 
       await Promise.all([
@@ -456,6 +512,7 @@ const messages = new Elysia({ prefix: "/messages" })
         200: t.Object({ success: t.Literal(true) }),
         403: errorBody,
         404: errorBody,
+        422: errorBody,
       },
     }
   )
@@ -507,9 +564,10 @@ const messages = new Elysia({ prefix: "/messages" })
       response: {
         ...authedErrors,
         200: t.Object({
-          messages: t.Array(t.Unknown()),
+          messages: t.Array(messageResponse),
           hasMore: t.Boolean(),
         }),
+        422: errorBody,
       },
     }
   )
@@ -582,7 +640,7 @@ const messages = new Elysia({ prefix: "/messages" })
   )
   .post(
     "/read",
-    async ({ body, auth }) => {
+    async ({ body, auth, set }) => {
       const { messageIds } = body
       const { roomId, user } = auth
       // Receipts are attributed to the token's identity; a body username is
@@ -590,6 +648,13 @@ const messages = new Elysia({ prefix: "/messages" })
       const username = user?.username
       if (!username) {
         return { success: true }
+      }
+
+      // Receipts rewrite message JSON; a scroll burst legitimately sends a
+      // few batches, but a scripted client must not turn that into an
+      // unbounded write amplifier.
+      if (!(await floodGate(roomId, auth.token, "read", 60, 5))) {
+        return tooManyRequests(set)
       }
 
       // One EVAL covers the whole batch: an HGET + conditional HSET per
@@ -707,11 +772,18 @@ const presence = new Elysia({ prefix: "/presence" })
   .use(authMiddleware)
   .post(
     "/typing",
-    async ({ body, auth }) => {
+    async ({ body, auth, set }) => {
       const { isTyping } = body
       const username = auth.user?.username
       if (!username) {
         return { success: true }
+      }
+
+      // Typing is the cheapest amplification surface: one request fans out
+      // to every participant. Cap it so a scripted client cannot turn the
+      // channel into a notification firehose.
+      if (!(await floodGate(auth.roomId, auth.token, "typing", 20, 5))) {
+        return tooManyRequests(set)
       }
 
       await realtime.channel(auth.roomId).emit("chat.typing", {
@@ -773,36 +845,33 @@ const presence = new Elysia({ prefix: "/presence" })
   .get(
     "/",
     async ({ auth }) => {
-      const presenceData = await redis.hgetall<Record<string, string | { username: string; lastSeen: number }>>(`presence:${auth.roomId}`)
-      const usersData = await redis.hgetall<Record<string, string | { username: string; avatar?: number }>>(`users:${auth.roomId}`)
+      const [presenceData, usersData] = await Promise.all([
+        redis.hgetall<Record<string, unknown>>(`presence:${auth.roomId}`),
+        redis.hgetall<Record<string, unknown>>(`users:${auth.roomId}`),
+      ])
 
-      const users = Object.entries(presenceData || {}).map(([token, data]) => {
-        const parsed = typeof data === "string" ? JSON.parse(data) : data
-        const isOnline = Date.now() - parsed.lastSeen < 60000
-        let avatar: number | undefined
-        if (usersData && typeof usersData[token] === "string") {
-          try {
-            const parsedUser = JSON.parse(usersData[token] as string)
-            if (
-              typeof parsedUser === "object" &&
-              parsedUser !== null &&
-              Number.isInteger(parsedUser.avatar) &&
-              parsedUser.avatar >= 0 &&
-              parsedUser.avatar <= 9
-            ) {
-              avatar = parsedUser.avatar
-            }
-          } catch {
-            // Pre-avatar join data stores a plain username string.
-          }
-        }
-        return {
-          username: parsed.username,
-          status: isOnline ? ("online" as const) : ("offline" as const),
-          lastSeen: parsed.lastSeen,
-          avatar,
-        }
-      })
+      const now = Date.now()
+      const users = Object.entries(presenceData ?? {}).flatMap(
+        ([token, data]) => {
+          const parsed = parsePresence(data)
+          if (!parsed) return []
+
+          const storedUser = parseUserRecord(usersData?.[token])
+          const avatar = storedUser?.avatar
+
+          return [
+            {
+              username: parsed.username,
+              status:
+                now - parsed.lastSeen < 60_000
+                  ? ("online" as const)
+                  : ("offline" as const),
+              lastSeen: parsed.lastSeen,
+              avatar,
+            },
+          ]
+        },
+      )
 
       return { users }
     },
@@ -836,7 +905,7 @@ const app = new Elysia({ prefix: "/api" })
       logger.warn("Request validation failed", { path })
       return
     }
-    if (code === "AuthError") {
+    if (code === "AuthError" || code === "CrossOriginError") {
       return
     }
     logger.error("Unhandled route failure", {

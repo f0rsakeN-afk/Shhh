@@ -109,12 +109,26 @@ const appJsonLd = {
     priceCurrency: "USD",
   },
   featureList: [
-    "Private rooms with a 60-minute lifespan",
+    "Private rooms with 15-minute to 24-hour lifespans",
     "No accounts, emails or profiles",
     "Instant messaging with typing and presence",
     "Self-destructing rooms",
   ],
 };
+
+/**
+ * JSON-LD is injected as raw markup, so `<` must be escaped: a value
+ * containing `</script>` would otherwise close the tag early. Static content
+ * makes this theoretical today, but the sink should be safe by construction.
+ */
+function serializeJsonLd(data: unknown): string {
+  return JSON.stringify(data)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029")
+}
 
 export default function RootLayout({
   children,
@@ -131,11 +145,11 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd) }}
+          dangerouslySetInnerHTML={{ __html: serializeJsonLd(websiteJsonLd) }}
         />
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(appJsonLd) }}
+          dangerouslySetInnerHTML={{ __html: serializeJsonLd(appJsonLd) }}
         />
       </head>
       <body className="overflow-x-clip bg-background font-sans antialiased">

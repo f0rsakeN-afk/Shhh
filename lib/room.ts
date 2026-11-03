@@ -21,6 +21,17 @@ export function roomDurationSeconds(duration?: RoomDuration | null): number {
 export const MAX_ROOM_PARTICIPANTS = 10
 
 /**
+ * Room ids are nanoid slugs. One pattern governs every boundary that turns a
+ * path/query value into a Redis key (proxy door, auth middleware, zod query
+ * schemas), so no layer can disagree about what a room id may contain.
+ */
+export const ROOM_ID_RE = /^[A-Za-z0-9_-]{8,64}$/
+
+export function isValidRoomId(value: unknown): value is string {
+  return typeof value === "string" && ROOM_ID_RE.test(value)
+}
+
+/**
  * How long after sending a message its author may still edit it. Server-
  * enforced on POST /messages/edit; the client only mirrors it to hide the
  * Edit affordance. A bounded window keeps the transcript's value to late
