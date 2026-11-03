@@ -1,9 +1,10 @@
 "use client"
 
-import { memo, useCallback } from "react"
+import { memo, useCallback, Fragment } from "react"
 import { Trash2 } from "lucide-react"
 import { format } from "date-fns"
 import { Message } from "@/lib/schemas"
+import { splitMentions } from "@/lib/mentions"
 import { EDIT_WINDOW_MS } from "@/lib/room"
 import { MessageReactions } from "./message-reactions"
 import { ReadReceiptIndicator } from "./read-receipt"
@@ -141,7 +142,23 @@ export const MessageItem = memo(function MessageItem({
                 : "rounded-tl-sm border border-line bg-muted text-foreground",
             )}
           >
-            {displayText}
+            {splitMentions(displayText, currentUsername).map((segment, index) =>
+              segment.kind === "text" ? (
+                <Fragment key={index}>{segment.text}</Fragment>
+              ) : (
+                <span
+                  key={index}
+                  className={cn(
+                    "rounded-[3px] underline underline-offset-2",
+                    segment.kind === "self"
+                      ? "bg-current/10 px-0.5 font-semibold decoration-2"
+                      : "font-medium decoration-current/40",
+                  )}
+                >
+                  {segment.text}
+                </span>
+              ),
+            )}
           </div>
         </div>
 

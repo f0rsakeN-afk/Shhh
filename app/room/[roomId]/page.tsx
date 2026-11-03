@@ -25,6 +25,12 @@ import { Spinner } from "@/components/ui/spinner"
 import { toastError, toastSuccess } from "@/lib/toast"
 import { ApiError, requireOk, isSessionStale, isThrottled } from "@/lib/api-error"
 import { notifyIfHidden } from "@/lib/notify"
+import {
+  bumpUnread,
+  clearUnread,
+  initUnreadBadge,
+  isAwayFromTab,
+} from "@/lib/unread"
 import { cn } from "@/lib/utils"
 import type { Message } from "@/lib/schemas"
 import {
@@ -647,6 +653,10 @@ const Page = () => {
       if (event === "chat.message") {
         if (data.sender !== joinedUsername && typeof data.text === "string" && data.text) {
           notifyIfHidden(data.sender, data.text)
+          // The title badge follows the tab even when notifications were
+          // never granted (or were dismissed), so arrivals are still
+          // visible without a browser permission.
+          if (isAwayFromTab()) bumpUnread()
         }
 
         // notifyIfHidden is a UI side effect, deliberately kept outside the
@@ -760,6 +770,7 @@ const Page = () => {
 
     const resync = () => {
       if (document.visibilityState !== "visible") return
+      clearUnread()
       queryClient.invalidateQueries({ queryKey: ["messages", roomId] })
     }
     document.addEventListener("visibilitychange", resync)
@@ -769,6 +780,13 @@ const Page = () => {
       window.removeEventListener("focus", resync)
     }
   }, [hasJoined, roomId, queryClient])
+
+  // The tab title badge counts arrivals while the room is out of view; the
+  // base title is captured on mount and restored on unmount/navigation.
+  useEffect(() => {
+    initUnreadBadge()
+    return () => clearUnread()
+  }, [])
 
   const handleTyping = useCallback(
     (isTyping: boolean) => {
