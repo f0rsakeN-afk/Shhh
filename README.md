@@ -1,12 +1,14 @@
 # Shhh
 
 Ephemeral chat rooms for up to ten people that self-destruct. Create a
-room, share the link, pick a name, and talk: when the hour is up (or the
-room is destroyed), the conversation and every Redis key behind it are gone.
+room, pick a lifetime (15 minutes, 1 hour, or 24 hours), share the link,
+pick a name, and talk: when the timer is up (or the room is destroyed), the
+conversation and every Redis key behind it are gone.
 
 ## How it works
 
-A room is a bundle of Redis keys with a shared 1 hour TTL:
+A room is a bundle of Redis keys sharing the lifetime chosen at creation
+(stamped once on `meta`, then inherited by every other key):
 
 - `meta:{roomId}`: connection registry and creation time; the expiry clock
 - `msg:{roomId}`: HASH of message id to stored message (O(1) point access)
@@ -25,6 +27,9 @@ Elysia.
 - Identity comes from the server, not the client. Each page load gets an
   httpOnly, sameSite=strict `x-auth-token` cookie; username and avatar are
   looked up server-side from that token and request bodies carry none of it
+- Room lifetime is fixed at creation (`ROOM_DURATIONS`: 15m / 1h / 24h);
+  the TTL is stamped in one pipeline on `meta` and later keys inherit the
+  remaining time, so no request can extend a room
 - Rooms hold up to `MAX_ROOM_PARTICIPANTS` (10) participants, enforced
   identically from one constant: the proxy door redirects surplus visitors
   and the Lua join gate rejects tokens past the ceiling (403), so the two
@@ -60,7 +65,8 @@ Elysia.
   expires after one hour (`history` config), so anything missed beyond
   that window is covered by the REST resync/poll instead — the two
   layers bound together: narrow gaps replay natively, wide ones converge
-  via REST
+  via REST (24-hour rooms intentionally keep the shorter replay window;
+  their missed events converge through REST)
 - Server-side logging: an app-root error handler prints every unhandled 500
   with its stack, and security seams (creates, joins, flood gates) emit
   structured events; the level filters output

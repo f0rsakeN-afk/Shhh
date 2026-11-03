@@ -19,11 +19,18 @@ import {
   roomIdQuerySchema,
   messagesQuerySchema,
   createMessageBodySchema,
+  createRoomBodySchema,
   editMessageBodySchema,
   type Message,
   type Reaction,
 } from "@/lib/schemas"
-import { EDIT_WINDOW_MS, MAX_ROOM_PARTICIPANTS, ROOM_TTL_SECONDS, pendingKeyFor } from "@/lib/room"
+import {
+  DEFAULT_ROOM_DURATION,
+  EDIT_WINDOW_MS,
+  MAX_ROOM_PARTICIPANTS,
+  pendingKeyFor,
+  roomDurationSeconds,
+} from "@/lib/room"
 import { sanitizeText, sanitizeUsername } from "@/lib/sanitize"
 import { createLogger, logger } from "@/lib/logger"
 
@@ -40,6 +47,16 @@ const authedErrors = {
   401: errorBody,
   429: errorBody,
 }
+
+// Elysia's t.Optional only wraps native schemas; this mirrors the zod
+// roomDurationSchema set (pinned together by tests/schemas.test.ts).
+const createRoomBody = t.Optional(
+  t.Object({
+    duration: t.Optional(
+      t.Union([t.Literal("15m"), t.Literal("1h"), t.Literal("24h")]),
+    ),
+  }),
+)
 
 // Message model: a HASH gives O(1) point reads/writes per message id (used
 // by reactions, receipts, edits and deletes) and a ZSET keeps the transcript
@@ -88,7 +105,7 @@ async function retainRoomTtl(roomId: string, keys: string[]): Promise<void> {
 const recentCreations = new Map<string, number[]>()
 
 const rooms = new Elysia({ prefix: "/room" })
-  .post("/create", async ({ request, set }) => {
+  .post("/create", async ({ body, request, set }) => {
     const ip =
       (request.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() ||
       "local"
@@ -114,6 +131,8 @@ const rooms = new Elysia({ prefix: "/room" })
     }
 
     const roomId = nanoid()
+    const duration = body?.duration
+    const ttlSeconds = roomDurationSeconds(duration)
 
     // One pipeline instead of two sequential round-trips to the REST edge;
     // room creation is on the first-interaction critical path.
@@ -122,14 +141,15 @@ const rooms = new Elysia({ prefix: "/room" })
       connected: JSON.stringify([]),
       createdAt: Date.now(),
     })
-    setup.expire(`meta:${roomId}`, ROOM_TTL_SECONDS)
+    setup.expire(`meta:${roomId}`, ttlSeconds)
     await setup.exec()
 
-    log.info("Room created", { roomId, ip })
+    log.info("Room created", { roomId, ip, duration: duration ?? DEFAULT_ROOM_DURATION })
 
     return { roomId }
   },
     {
+      body: createRoomBody,
       response: { ...authedErrors, 200: t.Object({ roomId: t.String() }) },
     })
   .get(

@@ -1,4 +1,22 @@
-export const ROOM_TTL_SECONDS = 60 * 60
+/**
+ * Room lifetime choices. The creator picks one at creation; the room's TTL
+ * is stamped once and every key inherits it, so no later read or write can
+ * extend a room's life.
+ */
+export const ROOM_DURATIONS = {
+  "15m": 15 * 60,
+  "1h": 60 * 60,
+  "24h": 24 * 60 * 60,
+} as const
+
+export type RoomDuration = keyof typeof ROOM_DURATIONS
+
+export const DEFAULT_ROOM_DURATION: RoomDuration = "1h"
+
+/** Seconds for a validated duration token, falling back to the default. */
+export function roomDurationSeconds(duration?: RoomDuration | null): number {
+  return ROOM_DURATIONS[duration ?? DEFAULT_ROOM_DURATION]
+}
 
 export const MAX_ROOM_PARTICIPANTS = 10
 

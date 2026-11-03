@@ -3,8 +3,11 @@ import {
   roomIdQuerySchema,
   messagesQuerySchema,
   createMessageBodySchema,
+  createRoomBodySchema,
   editMessageBodySchema,
+  roomDurationSchema,
 } from "@/lib/schemas"
+import { roomDurationSeconds } from "@/lib/room"
 
 describe("roomIdQuerySchema", () => {
   test("accepts nanoid-shaped room ids", () => {
@@ -55,5 +58,35 @@ describe("message body schemas", () => {
   test("edit body caps messageId and text", () => {
     expect(editMessageBodySchema.safeParse({ messageId: "x".repeat(65), text: "y" }).success).toBe(false)
     expect(editMessageBodySchema.safeParse({ messageId: "abc", text: "x".repeat(1001) }).success).toBe(false)
+  })
+})
+
+describe("roomDurationSchema", () => {
+  test("accepts the three supported lifetime tokens", () => {
+    for (const token of ["15m", "1h", "24h"] as const) {
+      expect(roomDurationSchema.safeParse(token).success).toBe(true)
+      expect(createRoomBodySchema.safeParse({ duration: token }).success).toBe(true)
+    }
+  })
+
+  test("rejects unknown or arbitrarily long lifetimes", () => {
+    expect(roomDurationSchema.safeParse("3h").success).toBe(false)
+    expect(roomDurationSchema.safeParse("7d").success).toBe(false)
+    expect(roomDurationSchema.safeParse(3600).success).toBe(false)
+  })
+
+  test("the body may omit duration (default room)", () => {
+    expect(createRoomBodySchema.safeParse({}).success).toBe(true)
+    expect(createRoomBodySchema.safeParse(undefined).success).toBe(false)
+  })
+})
+
+describe("roomDurationSeconds", () => {
+  test("maps tokens to seconds and defaults to one hour", () => {
+    expect(roomDurationSeconds("15m")).toBe(15 * 60)
+    expect(roomDurationSeconds("1h")).toBe(60 * 60)
+    expect(roomDurationSeconds("24h")).toBe(24 * 60 * 60)
+    expect(roomDurationSeconds()).toBe(60 * 60)
+    expect(roomDurationSeconds(null)).toBe(60 * 60)
   })
 })

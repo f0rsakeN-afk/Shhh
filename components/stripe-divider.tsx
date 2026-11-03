@@ -9,7 +9,7 @@ export function StripeDivider({ className }: StripeDividerProps) {
     <div
       aria-hidden="true"
       className={cn(
-        "stripe-divider mx-auto w-full max-w-5xl border-line md:border-x",
+        "stripe-divider mx-auto w-full max-w-5xl border-y border-line md:border-x",
         className,
       )}
     />

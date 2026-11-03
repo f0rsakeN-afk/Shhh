@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 
-export const alt = "Shhh: private rooms that vanish in one hour";
+export const alt = "Shhh: private rooms that vanish on your schedule";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 

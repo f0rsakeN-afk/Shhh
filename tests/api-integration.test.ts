@@ -354,6 +354,42 @@ integration("edit and delete ownership", () => {
   }, 60_000)
 })
 
+integration("room lifetime", () => {
+  test("creation stamps the chosen duration onto the TTL", async () => {
+    for (const [token, seconds] of [
+      ["15m", 15 * 60],
+      ["24h", 24 * 60 * 60],
+    ] as const) {
+      const res = await POST(
+        new Request(`${BASE}/room/create`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ duration: token }),
+        }),
+      )
+      expect(res.status).toBe(200)
+      const { roomId: createdId } = (await res.json()) as { roomId: string }
+
+      const ttl = await redis.ttl(`meta:${createdId}`)
+      expect(ttl).toBeGreaterThan(seconds - 20)
+      expect(ttl).toBeLessThanOrEqual(seconds)
+
+      await cleanup(createdId)
+    }
+  }, 30_000)
+
+  test("an unknown duration token is rejected, never silently defaulted", async () => {
+    const res = await POST(
+      new Request(`${BASE}/room/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ duration: "3h" }),
+      }),
+    )
+    expect(res.status).toBe(422)
+  }, 20_000)
+})
+
 runOrSkip("cleanup", async () => {
   await cleanup(roomId)
   const remaining = await redis.exists(`meta:${roomId}`)

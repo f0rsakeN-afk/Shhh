@@ -939,6 +939,7 @@ const Page = () => {
         suggestedName={username}
         onJoin={handleJoin}
         isJoining={isJoining}
+        timeToLive={ttlData?.ttl}
       />
     )
   }

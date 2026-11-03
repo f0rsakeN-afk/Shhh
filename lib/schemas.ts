@@ -46,6 +46,13 @@ export const createMessageBodySchema = z.object({
   text: z.string().min(1).max(1000),
 })
 
+/** Room lifetime token accepted at creation; maps to seconds in lib/room. */
+export const roomDurationSchema = z.enum(["15m", "1h", "24h"])
+
+export const createRoomBodySchema = z.object({
+  duration: roomDurationSchema.optional(),
+})
+
 export const editMessageBodySchema = z.object({
   messageId: z.string().max(64),
   text: z.string().max(1000),
@@ -102,4 +109,5 @@ export type ReadReceipt = z.infer<typeof readReceiptSchema>
 export type ChatDestroy = z.infer<typeof chatDestroySchema>
 export type RoomIdQuery = z.infer<typeof roomIdQuerySchema>
 export type CreateMessageBody = z.infer<typeof createMessageBodySchema>
+export type CreateRoomBody = z.infer<typeof createRoomBodySchema>
 export type MessageEdit = z.infer<typeof messageEditSchema>

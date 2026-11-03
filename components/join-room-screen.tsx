@@ -14,7 +14,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { UserAvatar } from "@/components/user-avatar"
 import { requestNotificationPermission } from "@/lib/notify"
 import { AVATAR_EMOJIS } from "@/lib/user-colors"
-import { MAX_ROOM_PARTICIPANTS, ROOM_TTL_SECONDS } from "@/lib/room"
+import { MAX_ROOM_PARTICIPANTS } from "@/lib/room"
 import { sanitizeUsername } from "@/lib/sanitize"
 import { cn } from "@/lib/utils"
 
@@ -24,16 +24,29 @@ interface JoinRoomScreenProps {
   suggestedName?: string
   onJoin: (name: string, avatarIndex: number) => void
   isJoining: boolean
+  /** Live remaining lifetime from the server; omitted while loading. */
+  timeToLive?: number
 }
 
 const NAME_MIN = 2
 const NAME_MAX = 24
+
+/** Compact remaining-time chip: "42 min", "3h 05m", or nothing yet. */
+function formatRemaining(ttlSeconds: number): string {
+  if (ttlSeconds >= 3600) {
+    const hours = Math.floor(ttlSeconds / 3600)
+    const minutes = Math.floor((ttlSeconds % 3600) / 60)
+    return `${hours}h ${minutes.toString().padStart(2, "0")}m`
+  }
+  return `${Math.max(1, Math.ceil(ttlSeconds / 60))} min`
+}
 
 export function JoinRoomScreen({
   roomId,
   suggestedName = "",
   onJoin,
   isJoining,
+  timeToLive,
 }: JoinRoomScreenProps) {
   const router = useRouter()
   const initialName = sanitizeUsername(suggestedName).slice(0, NAME_MAX)
@@ -94,7 +107,7 @@ export function JoinRoomScreen({
 
             <span className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-2 py-1 font-mono text-[11px] tabular-nums text-warning-foreground">
               <Clock3 className="size-3" aria-hidden="true" />
-              {Math.round(ROOM_TTL_SECONDS / 60)} min
+              {timeToLive && timeToLive > 0 ? formatRemaining(timeToLive) : "—"}
             </span>
           </div>
 

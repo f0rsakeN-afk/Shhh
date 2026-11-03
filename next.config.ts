@@ -11,7 +11,6 @@ const csp = [
   "object-src 'none'",
   "frame-ancestors 'none'",
   "form-action 'self'",
-  "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
   "style-src-elem 'self' 'unsafe-inline'",
   "font-src 'self' data:",
@@ -20,6 +19,12 @@ const csp = [
   "manifest-src 'self'",
   "worker-src 'self' blob:",
   "frame-src 'none'",
+  // React 19's dev-mode debugging features (callstack reconstruction) and
+  // Turbopack HMR evaluate code strings, so dev needs 'unsafe-eval'.
+  // Production never does, and must never be granted it.
+  process.env.NODE_ENV === "development"
+    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+    : "script-src 'self' 'unsafe-inline'",
   process.env.NODE_ENV === "development"
     ? "connect-src 'self' ws://localhost:* ws://127.0.0.1:*"
     : "connect-src 'self'",

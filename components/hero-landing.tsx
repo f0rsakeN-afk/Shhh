@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import {
   ArrowRight,
   CheckCheck,
@@ -18,6 +18,17 @@ import { JoinRoomProvider, useJoinRoom } from "@/components/join-room"
 import { StripeDivider } from "@/components/stripe-divider"
 import { AmbientBackdrop } from "@/components/ambient-backdrop"
 import { toastWarning } from "@/lib/toast"
+import {
+  DEFAULT_ROOM_DURATION,
+  ROOM_DURATIONS,
+  type RoomDuration,
+} from "@/lib/room"
+
+const DURATION_LABELS: Record<RoomDuration, string> = {
+  "15m": "15 min",
+  "1h": "1 hour",
+  "24h": "24 hours",
+}
 
 const features = [
   {
@@ -33,7 +44,7 @@ const features = [
   {
     icon: TimerReset,
     title: "Let it close",
-    body: "After one hour the room and every message inside it are deleted. Nothing is archived or recoverable.",
+    body: "When the timer you chose runs out — 15 minutes, an hour, or a day later — the room and every message inside it are deleted. Nothing is archived or recoverable.",
   },
 ]
 
@@ -53,6 +64,7 @@ export function HeroLanding() {
 
 function HeroBody() {
   const join = useJoinRoom()
+  const [duration, setDuration] = useState<RoomDuration>(DEFAULT_ROOM_DURATION)
 
   // Redirects from an expired, missing, or full room land here with a query
   // flag. Acknowledge it once so the return to the landing page is not
@@ -104,12 +116,12 @@ function HeroBody() {
             <div>
               <p className="inline-flex items-center gap-2 text-xs font-medium text-muted-foreground">
                 <span className="size-1.5 rounded-full bg-brand" aria-hidden="true" />
-                Private rooms with a one-hour limit
+                Private rooms with a timer you set
               </p>
 
               <h1 className="mt-5 max-w-xl text-balance text-[2.65rem] font-bold leading-[1.02] tracking-[-0.035em] sm:text-6xl lg:text-[4.1rem]">
                 A private room that{" "}
-                <span className="text-brand">disappears in an hour.</span>
+                <span className="text-brand">disappears on time.</span>
               </h1>
 
               <p className="mt-5 max-w-md text-pretty text-base leading-relaxed text-muted-foreground sm:text-[17px]">
@@ -118,7 +130,7 @@ function HeroBody() {
               </p>
 
               <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
-                <CreateRoomButton className={primaryLink}>
+                <CreateRoomButton duration={duration} className={primaryLink}>
                   Create a room
                   <ArrowRight className="size-4" strokeWidth={1.8} aria-hidden="true" />
                 </CreateRoomButton>
@@ -130,6 +142,31 @@ function HeroBody() {
                   <KeyRound className="size-4" strokeWidth={1.8} aria-hidden="true" />
                   Join with a code
                 </button>
+              </div>
+
+              <div
+                role="group"
+                aria-label="How long should the new room last?"
+                className="mt-3 flex flex-wrap items-center gap-1.5"
+              >
+                <span className="mr-1 text-xs text-muted-foreground">
+                  Room lifetime
+                </span>
+                {(Object.keys(ROOM_DURATIONS) as RoomDuration[]).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={duration === value}
+                    onClick={() => setDuration(value)}
+                    className={
+                      duration === value
+                        ? "inline-flex h-7 items-center rounded-md border border-brand/40 bg-brand/10 px-2.5 text-xs font-medium text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                        : "inline-flex h-7 items-center rounded-md border border-line px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    }
+                  >
+                    {DURATION_LABELS[value]}
+                  </button>
+                ))}
               </div>
 
               <p className="mt-4 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -153,7 +190,7 @@ function HeroBody() {
           >
             {[
               "Rooms hold up to ten people.",
-              "Every room is deleted after one hour.",
+              "Pick 15 minutes, an hour, or a whole day at creation.",
               "No account, email, or profile is required.",
             ].map((fact) => (
               <li
@@ -281,7 +318,7 @@ function HeroBody() {
             <div className="max-w-xs">
               <p className="text-base font-semibold tracking-[-0.02em]">Shhh</p>
               <p className="mt-2 text-pretty text-sm leading-relaxed text-muted-foreground">
-                A private chat room that deletes itself after one hour.
+                A private chat room that deletes itself when its timer ends.
               </p>
             </div>
 

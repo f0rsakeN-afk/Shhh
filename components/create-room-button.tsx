@@ -6,19 +6,24 @@ import { Loader2 } from "lucide-react"
 import { client } from "@/lib/client"
 import { toastError } from "@/lib/toast"
 import { requireOk, isSessionStale } from "@/lib/api-error"
+import type { RoomDuration } from "@/lib/room"
 import { cn } from "@/lib/utils"
 
 interface CreateRoomButtonProps {
   className?: string
   children: React.ReactNode
+  /** Chosen at creation; omitted means the standard one-hour room. */
+  duration?: RoomDuration
 }
 
-export function CreateRoomButton({ className, children }: CreateRoomButtonProps) {
+export function CreateRoomButton({ className, children, duration }: CreateRoomButtonProps) {
   const router = useRouter()
 
   const { mutate: createRoom, isPending } = useMutation({
     mutationFn: async () => {
-      const res = await client.room.create.post()
+      const res = await client.room.create.post(
+        duration ? { duration } : undefined,
+      )
       return requireOk<{ roomId: string }>(res, "Could not create a room")
     },
     onSuccess: (data) => {
