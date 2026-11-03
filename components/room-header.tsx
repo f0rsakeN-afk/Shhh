@@ -1,9 +1,18 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
-import { Bomb, Check, Copy, Link2 } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Bomb, Check, Copy, Link2, QrCode } from "lucide-react"
+import encodeQR from "@paulmillr/qr"
 import { Brand } from "@/components/brand"
 import { ThemeToggle } from "@/components/theme-toggle"
+import {
+  Dialog,
+  DialogDescription,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import {
   AlertDialog,
   AlertDialogClose,
@@ -37,7 +46,19 @@ export function RoomHeader({
   roomUrl,
 }: RoomHeaderProps) {
   const [copied, setCopied] = useState<"id" | "link" | null>(null)
+  const [qrOpen, setQrOpen] = useState(false)
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Generated lazily only when the dialog opens, at the smallest module
+  // scale (CSS sizes the SVG), so the ~24KB markup never rides the initial
+  // page payload or every header re-render.
+  const qrSvg = useMemo(
+    () =>
+      qrOpen
+        ? encodeQR(roomUrl, "svg", { ecc: "medium", border: 1, scale: 1 })
+        : "",
+    [qrOpen, roomUrl],
+  )
 
   useEffect(() => {
     return () => {
@@ -131,6 +152,58 @@ export function RoomHeader({
               </>
             )}
           </button>
+
+          <button
+            type="button"
+            onClick={() => setQrOpen(true)}
+            aria-label="Show QR code for the invite link"
+            title="Show QR code"
+            className={iconButton}
+          >
+            <QrCode className="size-3.5" strokeWidth={1.8} aria-hidden="true" />
+          </button>
+
+          <Dialog open={qrOpen} onOpenChange={setQrOpen}>
+            <DialogPopup aria-describedby="qr-share-description">
+              <DialogHeader>
+                <DialogTitle>Scan to join</DialogTitle>
+                <DialogDescription id="qr-share-description">
+                  Point a phone camera at the code. It opens this room&apos;s
+                  invite link — the same place the room code leads, until the
+                  timer ends.
+                </DialogDescription>
+              </DialogHeader>
+
+              <DialogPanel>
+                <div className="flex flex-col items-center gap-3">
+                  {/* Black on white regardless of theme: cameras read the
+                      canonical polarity best and the SVG has no theme
+                      awareness. */}
+                  <div
+                    className="w-full max-w-[240px] rounded-lg border border-line bg-white p-3 [&_svg]:h-auto [&_svg]:w-full [&_rect]:fill-black"
+                    // Library-generated SVG from our own room URL; no
+                    // user-controlled markup reaches this sink.
+                    dangerouslySetInnerHTML={{ __html: qrSvg }}
+                  />
+                  <code className="max-w-full break-all px-2 text-center font-mono text-[11px] text-muted-foreground">
+                    {roomUrl}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={copyInviteLink}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-md border border-line px-3 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                  >
+                    {copied === "link" ? (
+                      <Check className="size-4 text-success" aria-hidden="true" />
+                    ) : (
+                      <Copy className="size-4" strokeWidth={1.8} aria-hidden="true" />
+                    )}
+                    {copied === "link" ? "Link copied" : "Copy invite link"}
+                  </button>
+                </div>
+              </DialogPanel>
+            </DialogPopup>
+          </Dialog>
 
           <ThemeToggle className="size-8" />
 
