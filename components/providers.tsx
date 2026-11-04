@@ -6,8 +6,13 @@ import { useState } from "react"
 import { ToastProvider } from "@/components/toast-provider"
 import { NetworkStatus } from "@/components/network-status"
 import { isNetworkError } from "@/lib/api-error"
+import { rate } from "@/lib/rate-limiter"
 
 export const Providers = ({ children }: { children: React.ReactNode }) => {
+  // Initialize rate limiter once on app startup so distributed counters
+  // are warmed before any requests hit the server.
+  rate.init()
+
   // Tuned for a realtime app: data arrives over chat events, so TanStack
   // Query should not refetch on every focus, and cached room data is trusted
   // for a short window instead of being marked stale per mount.

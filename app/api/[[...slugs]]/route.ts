@@ -1,4 +1,5 @@
 import { redis } from "@/lib/redis"
+import { rate } from "@/lib/rate-limiter"
 import { Elysia, t } from "elysia"
 import { nanoid } from "nanoid"
 import {
@@ -94,9 +95,10 @@ const messageResponse = t.Object({
   deleted: t.Optional(t.Boolean()),
 })
 
-// Message model: a HASH gives O(1) point reads/writes per message id (used
+/** Message model: a HASH gives O(1) point reads/writes per message id (used
 // by reactions, receipts, edits and deletes) and a ZSET keeps the transcript
 // ordered by timestamp so history loads never scan or reorder data.
+ */
 const msgKeyFor = (roomId: string) => `msg:${roomId}`
 const msgOrderKeyFor = (roomId: string) => `order:${roomId}`
 
@@ -134,82 +136,67 @@ async function retainRoomTtl(roomId: string, keys: string[]): Promise<void> {
   }
 }
 
-// Coarse sliding-window memory of room creations per caller IP, for the
-// flood guard below. In-memory is enough at this app's scale. A global
-// ceiling sits alongside the per-IP limit so rotating/spoofed forwarding
-// headers still cannot mint unbounded rooms on one instance.
-const recentCreations = new Map<string, number[]>()
-const CREATE_WINDOW_MS = 60_000
-const CREATE_PER_IP_MAX = 5
-const CREATE_GLOBAL_MAX = 120
-let globalCreations: number[] = []
-
-/**
- * Best-effort caller identity for rate limiting. `x-forwarded-for` is the
- * platform-provided client hop on Vercel; `x-real-ip` covers common
- * self-hosted proxies. Values are truncated so a hostile header cannot turn
- * the in-memory map key into an unbounded string.
- */
-function clientIp(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-  const real = request.headers.get("x-real-ip")?.trim()
-  return (forwarded || real || "local").slice(0, 64)
-}
-
 const rooms = new Elysia({ prefix: "/room" })
-  .post("/create", async ({ body, request, set }) => {
-    const ip = clientIp(request)
-    const now = Date.now()
+  .post(
+    "/create",
+    async ({ body, request, set }) => {
+      rate.init()
 
-    const hits = (recentCreations.get(ip) ?? []).filter(
-      (hit) => now - hit < CREATE_WINDOW_MS,
-    )
-    if (hits.length >= CREATE_PER_IP_MAX) {
-      log.warn("Room create rate limited", { ip })
-      return tooManyRequests(set)
-    }
+      const CREATE_WINDOW_MS = 60_000
+      const CREATE_PER_IP_MAX = 5
+      const CREATE_GLOBAL_MAX = 120
 
-    globalCreations = globalCreations.filter(
-      (hit) => now - hit < CREATE_WINDOW_MS,
-    )
-    if (globalCreations.length >= CREATE_GLOBAL_MAX) {
-      log.warn("Room create rate limited globally", { ip })
-      return tooManyRequests(set)
-    }
-
-    hits.push(now)
-    recentCreations.set(ip, hits)
-    globalCreations.push(now)
-    if (recentCreations.size > 500) {
-      for (const [key, times] of recentCreations) {
-        if (!times.some((hit) => now - hit < CREATE_WINDOW_MS)) {
-          recentCreations.delete(key)
-        }
+      const getIp = (req: Request): string => {
+        const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+        const real = req.headers.get("x-real-ip")?.trim()
+        return (forwarded || real || "local").slice(0, 64)
       }
-    }
 
-    const roomId = nanoid()
-    const duration = body?.duration
-    const ttlSeconds = roomDurationSeconds(duration)
+      const { blocked: ipBlocked } = await rate.hit(
+        `rate:ip:${getIp(request)}`,
+        CREATE_WINDOW_MS,
+        CREATE_PER_IP_MAX,
+      )
 
-    // One pipeline instead of two sequential round-trips to the REST edge;
-    // room creation is on the first-interaction critical path.
-    const setup = redis.pipeline()
-    setup.hset(`meta:${roomId}`, {
-      connected: JSON.stringify([]),
-      createdAt: Date.now(),
-    })
-    setup.expire(`meta:${roomId}`, ttlSeconds)
-    await setup.exec()
+      if (ipBlocked) {
+        log.warn("Room create rate limited per-IP", { ip: getIp(request) })
+        return tooManyRequests(set)
+      }
 
-    log.info("Room created", { roomId, ip, duration: duration ?? DEFAULT_ROOM_DURATION })
+      const { blocked: globalBlocked } = await rate.hit(
+        "rate:global",
+        CREATE_WINDOW_MS,
+        CREATE_GLOBAL_MAX,
+      )
 
-    return { roomId }
-  },
+      if (globalBlocked) {
+        log.warn("Room create rate limited globally")
+        return tooManyRequests(set)
+      }
+
+      const roomId = nanoid()
+      const duration = body?.duration
+      const ttlSeconds = roomDurationSeconds(duration)
+
+      // One pipeline instead of two sequential round-trips to the REST edge;
+      // room creation is on the first-interaction critical path.
+      const setup = redis.pipeline()
+      setup.hset(`meta:${roomId}`, {
+        connected: JSON.stringify([]),
+        createdAt: Date.now(),
+      })
+      setup.expire(`meta:${roomId}`, ttlSeconds)
+      await setup.exec()
+
+      log.info("Room created", { roomId, ip: getIp(request), duration: duration ?? DEFAULT_ROOM_DURATION })
+
+      return { roomId }
+    },
     {
       body: createRoomBody,
       response: { ...authedErrors, 200: t.Object({ roomId: t.String() }) },
-    })
+    }
+  )
   .get(
     "/check",
     async ({ query }) => {
@@ -224,7 +211,7 @@ const rooms = new Elysia({ prefix: "/room" })
       }
 
       const connectedRaw = await redis.hget<unknown>(`meta:${roomId}`, "connected")
-      const connected = toStringArray(connectedRaw)
+      const connected: string[] = toStringArray(connectedRaw)
 
       const [presenceData, usersData] = await Promise.all([
         redis.hgetall<Record<string, unknown>>(`presence:${roomId}`),
@@ -691,7 +678,6 @@ for i = 3, #ARGV do
         mutated = mutated + 1
       end
     end
-  end
 end
 if mutated > 0 then
   local remaining = redis.call('TTL', msgKey)
