@@ -38,7 +38,7 @@ export function MessageActions({
       <Menu>
         <MenuTrigger
           aria-label="Message options"
-          className="grid size-7 cursor-default select-none place-items-center rounded-md border border-line bg-card text-muted-foreground outline-none transition-colors duration-150 hover:text-foreground data-highlighted:bg-accent data-highlighted:text-accent-foreground sm:text-sm [&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background data-popup-open:bg-accent data-popup-open:text-foreground"
+          className="grid size-7 cursor-default select-none place-items-center rounded-md border border-line bg-card text-muted-foreground outline-none transition-colors duration-150 hover:text-foreground data-highlighted:bg-accent data-highlighted:text-accent-foreground sm:text-sm [&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background data-popup-open:bg-accent data-popup-open:text-foreground"
         >
           <MoreHorizontal className="size-3.5" strokeWidth={1.8} />
         </MenuTrigger>

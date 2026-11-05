@@ -376,7 +376,7 @@ export function MessageInput({
                 onPick={insertEmoji}
                 align="start"
                 label="Add emoji to your message"
-                triggerClassName="grid size-9 shrink-0 place-items-center rounded-md border border-transparent text-muted-foreground outline-none transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background data-popup-open:bg-accent data-popup-open:text-foreground"
+                triggerClassName="grid size-9 shrink-0 place-items-center rounded-md border border-transparent text-muted-foreground outline-none transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background data-popup-open:bg-accent data-popup-open:text-foreground"
               >
                 <Smile size={16} strokeWidth={1.8} aria-hidden="true" />
               </EmojiPicker>
