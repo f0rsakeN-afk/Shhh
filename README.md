@@ -73,6 +73,29 @@ Elysia.
 - Content-Security-Policy is scope-exact: realtime rides `EventSource` over
   the same origin, so production `connect-src` is `'self'` (dev adds only
   localhost HMR WebSockets)
+- **Distributed rate limiting**: room creation is guarded by Redis INCR/EXPIRE
+  so limits work across server instances. Per-IP and global caps with sliding
+  windows; `rate.init()` warmed at app start via `Providers`. Falls back to
+  in-process Map on Redis failure.
+- **Boundary validation**: `safeJsonParse` degrades to `null` instead of
+  throwing; `messageSchema` validates at storage entry; `parsePresence` /
+  `parseUserRecord` tolerate malformed stored data; `sanitizeText` strips
+  invisible/bidi/C1 control chars; NFKC username folding prevents lookalike
+  impersonation
+- **Flood gates** on `/read` (60/5s), `/typing` (20/5s), `/reaction` (12/5s)
+  prevent write-amplification bursts
+
+## History windowing
+
+The client keeps the newest 100 messages in React Query and pages back in
+blocks through `GET /api/messages?roomId=...&limit=...&before={ts}` (newest
+first, cursor exclusive, `hasMore` flag on every page). Older pages are kept
+in local state; scrolling near the top silently prepends the previous page,
+and viewport anchoring keeps the reader in place during prepends. New
+messages sink the view to the newest content only while the reader is near
+the bottom; scrolled-up readers get a "New messages" jump pill instead of
+being yanked. The room auto-destruction shows a warning palette countdown
+and announces expiry to screen readers.
 
 ## History windowing
 
@@ -118,3 +141,16 @@ bun run dev      # http://localhost:3000
 - Upstash Redis (REST) for storage, Upstash Realtime for fan-out
 - Zod schemas shared by server validation and client types
 - Tailwind CSS with a small local UI kit (`components/ui`)
+- **Distributed rate limiting**: Redis INCR/EXPIRE so limits work across instances
+- **Landing page client/server split**: `hero-landing-static.tsx` renders
+  factual content server-first, reducing client-side JS payload; interactive
+  parts (duration picker, join flow, RoomPreview) remain client-bound
+- **Hardening wave**: boundary validation (`safeJsonParse`, NFKC usernames,
+  flood gates on `/read`/`/typing`/`/reaction`), content sanitisation,
+  cross-origin origin guard, 20s AbortController timeout → "Connection is
+  too slow" toast, `NetworkStatus` component (offline banner + slow-link
+  notice), `isNetworkError()`/`networkErrorCopy()` central classification
+- **Performance**: `date-fns` fully removed (30KB saved), `@paulmillr/qr`
+  dynamically imported on dialog open (23KB only on open), 9 unreferenced
+  public assets `git rm`d, TTL stamps 900/3600/86400, `CACHE_CONTROL:
+  no-store` on `/room/*` and `/api/*` next.config.ts headers
