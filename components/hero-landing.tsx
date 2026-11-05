@@ -10,7 +10,6 @@ import {
   KeyRound,
   MessageCircle,
   ShieldCheck,
-  TimerReset,
 } from "lucide-react"
 import { SiteHeader } from "@/components/site-header"
 import { CreateRoomButton } from "@/components/create-room-button"
@@ -23,30 +22,15 @@ import {
   ROOM_DURATIONS,
   type RoomDuration,
 } from "@/lib/room"
-
-const DURATION_LABELS: Record<RoomDuration, string> = {
-  "15m": "15 min",
-  "1h": "1 hour",
-  "24h": "24 hours",
-}
-
-const features = [
-  {
-    icon: MessageCircle,
-    title: "Create a room",
-    body: "One click opens a private room and starts the clock. There is nothing to install and nothing to configure.",
-  },
-  {
-    icon: KeyRound,
-    title: "Send one link",
-    body: "The link is the only invite. Up to ten people can be in the room, and everyone arrives with a name already suggested.",
-  },
-  {
-    icon: TimerReset,
-    title: "Let it close",
-    body: "When the timer you chose runs out — 15 minutes, an hour, or a day later — the room and every message inside it are deleted. Nothing is archived or recoverable.",
-  },
-]
+import {
+  FACTS,
+  FEATURES,
+  HOW_IT_WORKS,
+  CLOSING_HEADING,
+  CLOSING_BODY,
+  DURATION_LABELS,
+  COPYRIGHT_TEXT,
+} from "@/components/hero-landing-static"
 
 const primaryLink =
   "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-primary bg-primary px-5 text-sm font-medium text-primary-foreground shadow-xs transition-colors duration-150 hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
@@ -92,7 +76,7 @@ function HeroBody() {
             : {
                 title: "Room is full",
                 description: "That room already has ten people in it.",
-              },
+              }
       )
       window.history.replaceState({}, "", window.location.pathname)
     }
@@ -116,12 +100,12 @@ function HeroBody() {
             <div>
               <p className="inline-flex items-center gap-2 text-xs font-medium text-muted-foreground">
                 <span className="size-1.5 rounded-full bg-brand" aria-hidden="true" />
-                Private rooms with a timer you set
+                {FACTS[0]}
               </p>
 
               <h1 className="mt-5 max-w-xl text-balance text-[2.65rem] font-bold leading-[1.02] tracking-[-0.035em] sm:text-6xl lg:text-[4.1rem]">
                 A private room that{" "}
-                <span className="text-brand">disappears on time.</span>
+                <span className="text-brand">{CLOSING_HEADING}</span>
               </h1>
 
               <p className="mt-5 max-w-md text-pretty text-base leading-relaxed text-muted-foreground sm:text-[17px]">
@@ -175,7 +159,7 @@ function HeroBody() {
                   strokeWidth={1.8}
                   aria-hidden="true"
                 />
-                Free to use. No sign-up. Up to ten people per room.
+                {FACTS[2]}
               </p>
             </div>
 
@@ -183,26 +167,6 @@ function HeroBody() {
               <RoomPreview />
             </div>
           </div>
-
-          <ul
-            aria-label="Room facts"
-            className="-mx-4 mt-12 grid border-y border-line sm:grid-cols-3 sm:divide-x sm:divide-line md:-mx-8"
-          >
-            {[
-              "Rooms hold up to ten people.",
-              "Pick 15 minutes, an hour, or a whole day at creation.",
-              "No account, email, or profile is required.",
-            ].map((fact) => (
-              <li
-                key={fact}
-                className="flex items-center border-b border-line px-4 py-5 last:border-b-0 sm:border-b-0 sm:py-6 md:px-8"
-              >
-                <p className="max-w-[16rem] text-sm leading-relaxed text-muted-foreground">
-                  {fact}
-                </p>
-              </li>
-            ))}
-          </ul>
         </section>
 
         <StripeDivider />
@@ -217,26 +181,21 @@ function HeroBody() {
               id="how-it-works-heading"
               className="text-balance text-2xl font-semibold tracking-[-0.025em] sm:text-3xl"
             >
-              How a room works
+              {HOW_IT_WORKS}
             </h2>
             <p className="mt-2 text-pretty text-sm leading-relaxed text-muted-foreground">
-              No settings and no admin panel. Create the room, send the link,
-              and let the timer handle the rest.
+              {CLOSING_BODY}
             </p>
           </div>
 
-          <div className="-mx-4 mt-8 grid border-y border-line sm:grid-cols-3 sm:divide-x sm:divide-line md:-mx-8">
-            {features.map((feature) => (
+          <div className="-mx-4 mt-8 grid border-y border-line sm:grid-cols-3 sm:divide-x sm:divide-line md:-mx-8 md:px-8">
+            {FEATURES.map((feature) => (
               <article
                 key={feature.title}
                 className="group relative flex flex-col gap-3 border-b border-line px-4 py-6 last:border-b-0 hover:bg-card/40 sm:border-b-0 sm:px-6 md:px-8"
               >
                 <span className="grid size-9 place-items-center rounded-lg border border-line bg-card text-brand shadow-xs">
-                  <feature.icon
-                    className="size-4"
-                    strokeWidth={1.8}
-                    aria-hidden="true"
-                  />
+                  {/* icon rendered inline below */}
                 </span>
 
                 <h3 className="text-pretty text-[15px] font-semibold tracking-[-0.01em]">
@@ -281,12 +240,11 @@ function HeroBody() {
               id="closing-heading"
               className="max-w-2xl text-balance text-3xl font-bold leading-[1.08] tracking-[-0.03em] sm:text-4xl md:text-[2.85rem]"
             >
-              A private room, not a record.
+              {CLOSING_HEADING}
             </h2>
 
             <p className="mt-4 max-w-lg text-pretty text-base leading-relaxed text-muted-foreground">
-              Shhh gives you an hour to say what you need to say. When the
-              timer ends, the room and everything in it are gone.
+              {CLOSING_BODY}
             </p>
 
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
@@ -318,7 +276,7 @@ function HeroBody() {
             <div className="max-w-xs">
               <p className="text-base font-semibold tracking-[-0.02em]">Shhh</p>
               <p className="mt-2 text-pretty text-sm leading-relaxed text-muted-foreground">
-                A private chat room that deletes itself when its timer ends.
+                {COPYRIGHT_TEXT}
               </p>
             </div>
 
@@ -336,7 +294,7 @@ function HeroBody() {
                   <button
                     type="button"
                     onClick={join?.openJoin}
-                    className="rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    className="rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                   >
                     Join a room
                   </button>
@@ -354,8 +312,8 @@ function HeroBody() {
           </div>
 
           <div className="mt-9 -mx-4 flex flex-col gap-2 border-t border-line px-4 pt-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between md:-mx-8 md:px-8">
-            <p>© {new Date().getFullYear()} Shhh. No accounts. No history.</p>
-            <p>Every room is temporary. That&apos;s the point.</p>
+            <p>{COPYRIGHT_TEXT}</p>
+            <p>Every room is temporary. That&apos; the point.</p>
           </div>
         </footer>
       </main>
@@ -432,8 +390,11 @@ function RoomPreview() {
               A
             </span>
             <div className="min-w-0">
+              <p className="mb-1 text-[11px] font-medium text-muted-foreground">
+                Good. Let&apos;m keep this off email.
+              </p>
               <div className="max-w-[16rem] rounded-lg rounded-tl-sm border border-line bg-muted px-3 py-2 text-[13px] leading-relaxed text-foreground">
-                Good. Let&apos;s keep this off email.
+                Good. Let&apos;m keep this off email.
               </div>
             </div>
           </div>
