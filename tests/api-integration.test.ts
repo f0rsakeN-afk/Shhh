@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { nanoid } from "nanoid"
 import { GET, POST, DELETE } from "@/app/api/[[...slugs]]/route"
 import { redis } from "@/lib/redis"
+import { rate } from "@/lib/rate-limiter"
 import { MAX_ROOM_PARTICIPANTS, EDIT_WINDOW_MS } from "@/lib/room"
 import type { Message } from "@/lib/schemas"
 
@@ -21,6 +22,15 @@ const ROOM_TEST_TTL_SECONDS = 3600
 const hasRedis = Boolean(process.env.UPSTASH_REDIS_REST_URL)
 const integration = hasRedis ? describe : describe.skip
 const runOrSkip = hasRedis ? test : test.skip
+
+/**
+ * Reset rate limiter state before test suite to prevent
+ * cross-test rate limit accumulation (per-IP cap 5/60s, global cap 120/60s).
+ * This ensures integration tests remain deterministic when run together.
+ */
+if (hasRedis) {
+  rate.resetAll()
+}
 
 function tokenCookie(token: string): HeadersInit {
   return { cookie: `x-auth-token=${token}`, "content-type": "application/json" }

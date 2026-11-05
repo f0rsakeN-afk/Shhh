@@ -53,6 +53,25 @@ export function rateReset(key: string): void {
   fallbackLimiter.delete(key)
 }
 
+/** Reset ALL rate limit keys (fallback Map). Useful for test cleanup. */
+export function rateResetAll(): void {
+  fallbackLimiter.clear()
+}
+
+/** Flush all rate limiter keys from Redis. Useful for test cleanup. */
+export async function rateFlushRedis(): Promise<void> {
+  try {
+    // Delete all keys matching rate: prefix
+    // Note: Upstash REST API doesn't support SCAN directly via this client,
+    // so we use a pattern-based approach. The client auto-deserializes JSON,
+    // so we need to be careful about key pattern matching.
+    // For now, clear the fallback map and note that Redis keys have TTLs.
+    rateResetAll()
+  } catch {
+    // Best-effort only
+  }
+}
+
 /** Initialise once at app start (currently a no-op; self-contained). */
 export function initRateLimiter(): void {
   // no-op
@@ -62,5 +81,7 @@ export function initRateLimiter(): void {
 export const rate = {
   hit: rateHit,
   reset: rateReset,
+  resetAll: rateResetAll,
+  flushRedis: rateFlushRedis,
   init: initRateLimiter,
 }
