@@ -14,7 +14,7 @@ export const useUsername = () => {
 
   useEffect(() => {
     const main = () => {
-      const stored = localStorage.getItem(STORAGE_KEY)
+      const stored = (localStorage.getItem(STORAGE_KEY) ?? "").normalize("NFKC")
 
       if (stored) {
         setUsername(stored)
@@ -22,7 +22,7 @@ export const useUsername = () => {
       }
 
       const generated = generateUsername()
-      localStorage.setItem(STORAGE_KEY, generated)
+      localStorage.setItem(STORAGE_KEY, generated.normalize("NFKC"))
       setUsername(generated)
     }
 

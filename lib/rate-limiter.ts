@@ -14,6 +14,8 @@ import { redis } from "@/lib/redis"
 
 // Module-scoped fallback store (populated on first rateHit call).
 const fallbackLimiter: Map<string, { count: number; resetAt: number }> = new Map()
+// Per-key in-flight guard for concurrent rateHit calls on the same key.
+const inFlight = new Set<string>()
 
 /** Hit a rate limit key; returns { blocked, resetAt, current } */
 export async function rateHit(
@@ -35,6 +37,15 @@ export async function rateHit(
   } catch {
     // Fallback: in-process Map (not distributed; OK for single-instance dev).
     const now = Date.now()
+    // Guard against concurrent rateHit calls for the same key.
+    if (inFlight.has(key)) {
+      // Wait for in-progress hit to complete.
+      while (inFlight.has(key)) {
+        // spin-wait — this is best-effort fallback only
+      }
+    }
+    inFlight.add(key)
+
     const entry = fallbackLimiter.get(key) ?? { count: 0, resetAt: now + windowSecs }
     if (now > entry.resetAt) {
       entry.count = 1
@@ -45,6 +56,8 @@ export async function rateHit(
     fallbackLimiter.set(key, entry)
     const blocked = entry.count > maxHits
     return { blocked, resetAt: entry.resetAt, current: entry.count }
+  } finally {
+    inFlight.delete(key)
   }
 }
 

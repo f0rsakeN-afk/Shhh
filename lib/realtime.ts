@@ -3,6 +3,9 @@ import { InferRealtimeEvents, Realtime } from "@upstash/realtime"
 import { realtimeSchema, type Message } from "@/lib/schemas"
 import { ROOM_DURATIONS } from "@/lib/room"
 
+// Real-time client initialized with Upstash Redis. Throws at module load if
+// credentials are absent, so the operator knows immediately configuration is
+// missing rather than silently running without live features.
 export const realtime = new Realtime({
   schema: realtimeSchema,
   redis,

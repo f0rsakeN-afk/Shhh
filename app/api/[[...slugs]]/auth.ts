@@ -108,8 +108,9 @@ export async function floodGate(
   const pipeline = redis.pipeline()
   pipeline.incr(floodKey)
   pipeline.ttl(floodKey)
-  const pipelineResult = (await pipeline.exec()) as number[] | null
-  const [hitCount, windowTtl] = pipelineResult ?? []
+  const pipelineResult = (await pipeline.exec()) as (number | null)[]
+  const hitCount = pipelineResult[0] ?? 0
+  const windowTtl = pipelineResult[1] ?? 0
 
   if ((windowTtl ?? 0) <= 0) {
     await redis.expire(floodKey, windowSeconds)
@@ -164,6 +165,7 @@ export const authMiddleware = new Elysia({ name: "auth" })
       }
       const expectedHost =
         request.headers.get("host") ?? new URL(request.url).host
+      // Compare full host including port to avoid mismatches on non-standard ports
       if (originHost !== expectedHost) {
         throw new CrossOriginError()
       }

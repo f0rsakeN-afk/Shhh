@@ -121,8 +121,8 @@ function JoinRoomDialog({
     },
   })
 
-  const normalizedRoomId = normalizeRoomId(roomId)
-  const isValid = NANOID_PATTERN.test(normalizedRoomId)
+  const normalized = normalizeRoomId(roomId)
+  const isValid = NANOID_PATTERN.test(normalized) && normalized.length === 21
   const showFormatHint = Boolean(roomId.trim()) && !isValid && !error
 
   const handleOpenChange = useCallback(
@@ -137,9 +137,9 @@ function JoinRoomDialog({
     (event: React.FormEvent) => {
       event.preventDefault()
       setError(null)
-      if (normalizedRoomId) checkAndJoin(normalizedRoomId)
+      if (normalized) checkAndJoin(normalized)
     },
-    [checkAndJoin, normalizedRoomId],
+    [checkAndJoin, normalized],
   )
 
   const handlePaste = useCallback(
@@ -193,8 +193,8 @@ function JoinRoomDialog({
                   className="w-14 text-right font-mono text-[11px] tabular-nums text-muted-foreground"
                   aria-hidden="true"
                 >
-                  {normalizedRoomId.length > 0 && !isValid
-                    ? `${normalizedRoomId.length}/21`
+                  {normalized.length > 0 && !isValid
+                    ? `${normalized.length}/21`
                     : ""}
                 </span>
               </div>

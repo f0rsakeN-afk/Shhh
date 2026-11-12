@@ -252,19 +252,27 @@ export const MessageList = memo(function MessageList({
     }
   }, [messages])
 
-  // Animation membership is derived-from-render data; once the rendered
-  // set is far smaller than the tracked set (huge bounded lists), shrink it.
-  if (animatedMessages.size > messages.length + 250) {
-    const knownIds = new Set(messages.map((message) => message.id))
-    const pruned = new Set(
-      Array.from(animatedMessages).filter((id) => knownIds.has(id)),
-    )
-    if (pruned.size < animatedMessages.size) {
-      setAnimatedMessages(pruned)
-    }
+  // Prune animation set to only IDs still in the current message list,
+  // preventing unbounded growth when messages are paged out.
+  const knownIds = new Set(messages.map((message) => message.id))
+  const pruned = new Set(
+    Array.from(animatedMessages).filter((id) => knownIds.has(id)),
+  )
+  if (pruned.size < animatedMessages.size) {
+    setAnimatedMessages(pruned)
   }
 
-  // One callback per id, recreated only for genuinely new ids.
+  // visible history rather than growing unbounded. Stateful pruning for the
+  // animation set happens above during render; a plain ref cleanup below
+  // would need a setState, which the hooks compiler rejects in effect bodies.
+  useEffect(() => {
+    for (const id of Array.from(messageRefs.current.keys())) {
+      if (!knownIds.has(id)) {
+        messageRefs.current.delete(id)
+        refCallbacksRef.current.delete(id)
+      }
+    }
+  }, [messages])
   const getMessageRef = useCallback((id: string) => {
     let callback = refCallbacksRef.current.get(id)
     if (!callback) {

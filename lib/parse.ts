@@ -10,7 +10,14 @@
 
 export function safeJsonParse<T = unknown>(raw: unknown): T | null {
   if (raw === null || raw === undefined) return null
-  if (typeof raw !== "string") return raw as T
+  if (typeof raw !== "string") {
+    // Normalize arrays from Upstash deserialization (each element may be
+    // a string or already-parsed object depending on client version).
+    if (Array.isArray(raw)) {
+      return raw.map((item) => safeJsonParse(item as unknown) as T) as T
+    }
+    return raw as T
+  }
 
   try {
     return JSON.parse(raw) as T
