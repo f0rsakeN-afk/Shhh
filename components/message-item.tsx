@@ -94,7 +94,7 @@ export const MessageItem = memo(function MessageItem({
   return (
     <div
       className={cn(
-        "group flex w-full gap-2.5",
+        "group flex w-full gap-2.5 group-hover:bg-black/5 group-hover:transition-colors duration-150",
         isOwnMessage ? "flex-row-reverse" : "flex-row",
       )}
     >

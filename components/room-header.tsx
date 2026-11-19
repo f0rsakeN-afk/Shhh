@@ -36,7 +36,7 @@ interface RoomHeaderProps {
 }
 
 const iconButton =
-  "grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+  "grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent/[0.1] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:border-primary/20 disabled:opacity-64"
 
 export function RoomHeader({
   roomId,
@@ -153,7 +153,7 @@ export function RoomHeader({
             onClick={copyInviteLink}
             aria-label={copied === "link" ? "Invite link copied" : "Copy invite link"}
             title="Copy invite link"
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-xs text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:px-2.5"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-xs text-muted-foreground transition-colors duration-200 hover:bg-accent/[0.1] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:px-2.5"
           >
             {copied === "link" ? (
               <>
@@ -230,7 +230,7 @@ export function RoomHeader({
               aria-label="Destroy room"
               title="Destroy room now"
               className={cn(
-                "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-xs text-destructive-foreground transition-colors duration-150 hover:border-destructive/30 hover:bg-destructive/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:px-3",
+                "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-xs text-destructive-foreground transition-colors duration-200 hover:border-destructive/30 hover:bg-destructive/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:px-3",
               )}
             >
               <Bomb className="size-3.5" strokeWidth={1.8} aria-hidden="true" />

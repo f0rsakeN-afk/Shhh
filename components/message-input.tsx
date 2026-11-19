@@ -329,7 +329,7 @@ export function MessageInput({
           </div>
         )}
 
-        <div className="relative rounded-lg border border-line bg-card p-1.5 transition-[border-color,box-shadow] duration-150 focus-within:border-brand/60 focus-within:ring-2 focus-within:ring-ring/20">
+        <div className="relative rounded-lg border border-line bg-card p-1.5 transition-[border-color,box-shadow] duration-200 focus-within:border-brand/60 focus-within:ring-2 focus-within:ring-ring/20 focus-visible:outline-none">
           {/* Mention autocomplete panel: keeps focus in the textarea with
               aria-activedescendant, the pattern IME-safe composers use. */}
           {mentionOpen && (

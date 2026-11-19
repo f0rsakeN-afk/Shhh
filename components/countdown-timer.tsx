@@ -77,7 +77,7 @@ export function CountdownTimer({
       className={cn(
         "inline-flex h-8 min-w-[4.75rem] shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 font-mono text-xs tabular-nums transition-colors duration-150",
         isCritical
-          ? "border-destructive/30 bg-destructive/[0.08] text-destructive-foreground"
+          ? "border-destructive/30 bg-destructive/[0.08] text-destructive-foreground animate-pulse"
           : isWarning
             ? "border-warning/30 bg-warning/[0.08] text-warning-foreground"
             : "border-line bg-card text-muted-foreground",
@@ -87,13 +87,14 @@ export function CountdownTimer({
       role="timer"
       aria-live="off"
       aria-label={`Room expires in ${formatted}`}
+      style={{ transition: isCritical ? 'none' : 'background-color 200ms ease, border-color 200ms ease' }}
     >
       <TimerReset
         className={cn("size-3.5", isCritical && "animate-pulse")}
         strokeWidth={1.8}
         aria-hidden="true"
       />
-      <span className="min-w-[2.5rem] text-center">{formatted}</span>
+      <span className="flex items-center min-w-[2.5rem]">{formatted}</span>
       {/* Screen readers get the destructive event explicitly; from 0 the
           room navigates away, and a visual-only countdown is silent to
           assistive tech. role="timer" with aria-live="off" stays correct
