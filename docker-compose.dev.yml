@@ -1,0 +1,59 @@
+# Development stack for Shhh — hot reload against a bind-mounted source tree.
+#
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# Source comes from the host; node_modules and .next live in named volumes so
+# container installs never touch the host tree and a stale production build
+# can't confuse `next dev`.
+name: shhh-dev
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: shhh:dev
+    container_name: shhh-dev
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${SHHH_DEV_PORT:-3000}:3000"
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    # Match the host user so files created in the bind mount (and the seeded
+    # node_modules volume) stay owned by you. Recreate the volumes with
+    # `down -v` if you change these.
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+      - next_cache:/app/.next
+    healthcheck:
+      # Bun is guaranteed present; the slim image has no curl/wget.
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "const r = await fetch('http://127.0.0.1:3000/'); process.exit(r.ok ? 0 : 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  node_modules:
+  next_cache:

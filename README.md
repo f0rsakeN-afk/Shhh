@@ -43,9 +43,9 @@ every Redis key behind it are gone.
 
 | Metric | Result |
 |---|---|
-| Pass | 95 |
-| Fail | 2 (pre-existing test isolation issues from 97 shared-tests; cleanup only at file end) |
-| Details | - "read receipts > receipts batch": 500 (message state corrupted from prior tests)<br>- "room lifetime > creation stamps TTL": 429 (flood gate from accumulated rate limit counts) |
+| Pass | 97 |
+| Fail | 0 |
+| Details | Run against real Upstash credentials: `bun --env-file=.env.local test` |
 
 ## 🛠 Development Gates
 
@@ -89,7 +89,12 @@ tests/
   *.test.ts                  # ← Unit tests for parse, sanitize, mentions, schemas
  AGENTS.md                    # ← OpenCode agents configuration
  package.json               # ← Dependencies + scripts (dev, build, lint, typecheck, test)
- next.config.ts             # ← Next.js config: React Compiler, CSP, security headers
+ next.config.ts             # ← Next.js config: standalone output, React Compiler, CSP, headers
+ Dockerfile                 # ← Multi-stage production image (standalone runtime)
+ Dockerfile.dev             # ← Development image (Bun + hot reload)
+ docker-compose.yml         # ← Production stack
+ docker-compose.dev.yml     # ← Development stack (bind mount + named volumes)
+ scripts/dev-entrypoint.sh  # ← Dev dependency sync + `next dev` launcher
 ```
 
 ## 🏗 Architecture
@@ -194,7 +199,7 @@ bun run lint      # eslint        → silent
 bun run typecheck # tsc --noEmit → exit 0
 
 # 5. Run tests (requires real Redis)
-bun --env-file=.env.local test   # 95 pass / 2 fail (pre-existing isolation issues)
+bun --env-file=.env.local test   # 97 pass / 0 fail
 ```
 
 ### Environment Variables
@@ -207,6 +212,65 @@ bun --env-file=.env.local test   # 95 pass / 2 fail (pre-existing isolation issu
 | `NEXT_PUBLIC_API_URL` | API base for the client; defaults to current origin | 🌐 |
 | `LOG_LEVEL` | Server log threshold: `debug`, `info` (default), `warn`, `error` | 🌐 |
 
+### Docker
+
+Two stacks share the same codebase: a minimal standalone production image and
+a hot-reloading development image. Redis is Upstash REST, so neither stack runs
+a Redis container — `.env.local` supplies the credentials.
+
+| | Development | Production |
+|---|---|---|
+| Start | `docker compose -f docker-compose.dev.yml up --build` | `docker compose up --build -d` |
+| Dockerfile | `Dockerfile.dev` (Bun toolchain) | `Dockerfile` (Bun build → Node 22 Alpine) |
+| Source | bind-mounted from the host | copied into the image |
+| Hot reload | ✅ Turbopack | — |
+| Port | `${SHHH_DEV_PORT:-3000}` | `${SHHH_PORT:-3000}` |
+| Secrets | `.env.local` (runtime) | `.env.local` (runtime) |
+| User | host UID/GID (`DOCKER_UID`/`DOCKER_GID`, default `1000`) | non-root `nextjs` (UID 1001) |
+
+```sh
+# Development: edits on the host reload in the container.
+docker compose -f docker-compose.dev.yml up --build
+docker compose -f docker-compose.dev.yml logs -f app
+
+# Production: standalone server, no node_modules install at runtime.
+docker compose up --build -d
+docker compose ps          # wait for "healthy"
+docker compose logs -f app
+docker compose down
+```
+
+`NEXT_PUBLIC_*` values are inlined into client assets at **build** time. The
+compose files read them from your shell (or a `.env` file), not from
+`.env.local`:
+
+```sh
+NEXT_PUBLIC_SITE_URL=https://chat.example.com \
+  docker compose build
+docker compose up -d       # UPSTASH_* still come from .env.local at runtime
+```
+
+| Variable | Scope | Notes |
+|---|---|---|
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | runtime | read from `.env.local`; never copied into an image (`.dockerignore`) |
+| `NEXT_PUBLIC_SITE_URL` | build | canonical URL; changing it requires a rebuild |
+| `NEXT_PUBLIC_API_URL` | build | leave empty when the API is same-origin |
+| `SHHH_PORT` / `SHHH_DEV_PORT` | compose | host port only; defaults to `3000` |
+| `DOCKER_UID` / `DOCKER_GID` | dev | match the host user so bind-mounted files stay yours |
+| `LOG_LEVEL` | runtime | `debug` in dev, `info` in production |
+
+Notes:
+
+- Dependencies are installed once into a named volume in dev. The entrypoint
+  re-runs `bun install` automatically when `package.json`/`bun.lock` changes;
+  after changing `DOCKER_UID`/`DOCKER_GID`, recreate the volumes with
+  `docker compose -f docker-compose.dev.yml down -v`.
+- The production healthcheck hits `/` (static), so the container reports
+  `healthy` even before Redis is configured; the first Redis-backed request
+  fails with a clear missing-credentials error instead.
+- Both stacks drop Linux capabilities where possible and rotate container logs.
+  Terminate TLS at a reverse proxy in front of port 3000.
+
 ## � Scripts
 
 | Script | Description |
@@ -216,7 +280,11 @@ bun --env-file=.env.local test   # 95 pass / 2 fail (pre-existing isolation issu
 | `bun run start` | `next start` → serve production build |
 | `bun run lint` | `eslint` → silent (no errors) |
 | `bun run typecheck` | `tsc --noEmit` → exit 0 |
-| `bun --env-file=.env.local test` | Integration tests against real Redis (95 pass / 2 fail) |
+| `bun --env-file=.env.local test` | Integration tests against real Redis (97 pass / 0 fail) |
+| `bun run docker:dev` | Build + start the hot-reloading dev stack |
+| `bun run docker:prod` | Build + start the production stack (detached) |
+| `bun run docker:prod:down` | Stop the production stack |
+| `bun run docker:dev:down` | Stop the development stack |
 
 ## � Changelog
 
@@ -230,7 +298,7 @@ bun --env-file=.env.local test   # 95 pass / 2 fail (pre-existing isolation issu
 - Network observability: NetworkStatus, isNetworkError, 20s AbortController timeout
 - UI consistency: focus-visible:ring-offset-2 across 11 components
 - Lighthouse: 4/5 categories 100/100 (Performance 83/100 — JS execution inherent to app)
-- Tests: 95 pass / 2 fail (pre-existing test isolation from 97 shared-tests)
+- Tests: 97 pass / 0 fail
 - All gates: lint silent, build exit 0, typecheck exit 0
 
 ### Earlier Commits

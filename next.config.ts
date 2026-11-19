@@ -33,6 +33,9 @@ const csp = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
+  // Emit `.next/standalone` with only the traced server files; the Docker
+  // runtime stage copies it instead of shipping node_modules.
+  output: "standalone",
   reactCompiler: true,
   async headers() {
     const securityHeaders = [

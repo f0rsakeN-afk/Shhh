@@ -1,0 +1,55 @@
+# Production stack for Shhh.
+#
+#   docker compose up --build -d
+#   docker compose ps          # wait for "healthy"
+#
+# Server secrets are read from .env.local at runtime (mounted as environment
+# variables, never baked into the image). NEXT_PUBLIC_* values are build args
+# because Next inlines them into client assets — changing one requires a
+# rebuild, not a restart.
+name: shhh
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        # Compose interpolates these from the shell or the `.env` file. The
+        # defaults keep a local build working; export the real origin before
+        # building for a deployment.
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3000}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+    image: shhh:latest
+    container_name: shhh
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${SHHH_PORT:-3000}:3000"
+    env_file:
+      # Required for rooms and realtime. `required: false` lets the container
+      # start without it (the landing page still renders) and fail loudly on
+      # the first Redis-backed request instead of refusing to boot.
+      - path: .env.local
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    # The server binds an unprivileged port and needs no Linux capabilities.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

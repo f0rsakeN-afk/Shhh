@@ -8,7 +8,11 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "bun --env-file=.env.local test"
+    "test": "bun --env-file=.env.local test",
+    "docker:dev": "docker compose -f docker-compose.dev.yml up --build",
+    "docker:dev:down": "docker compose -f docker-compose.dev.yml down",
+    "docker:prod": "docker compose up --build -d",
+    "docker:prod:down": "docker compose down"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
