@@ -50,13 +50,17 @@ export function JoinRoomScreen({
 }: JoinRoomScreenProps) {
   const router = useRouter()
   const initialName = sanitizeUsername(suggestedName).slice(0, NAME_MAX)
-  const [name, setName] = useState(initialName)
+  // Until the user edits the field, the name follows the suggestion. That
+  // lets a remembered name arrive after mount (localStorage is client-only)
+  // without an effect later overwriting what they typed.
+  const [draftName, setDraftName] = useState<string | null>(null)
+  const name = draftName ?? initialName
   const [avatarIndex, setAvatarIndex] = useState(0)
   const [error, setError] = useState<string | null>(null)
 
   const handleNameChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
-      setName(event.target.value)
+      setDraftName(event.target.value)
       setError(null)
     },
     [],

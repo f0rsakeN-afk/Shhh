@@ -237,15 +237,13 @@ export const MessageList = memo(function MessageList({
 
   // Landed state for messages that are no longer rendered (paged out after
   // long sessions) is dropped so the ref/callback maps stay proportional to
-  // visible history rather than growing unbounded. Stateful pruning for the
-  // animation set happens during render below (a plain ref cleanup there
-  // would need a setState, which the hooks compiler rejects in effect
-  // bodies).
-  useEffect(() => {
-    const knownIds = new Set(messages.map((message) => message.id))
+  // visible history rather than growing unbounded.
+  const knownIds = new Set(messages.map((message) => message.id))
 
+  useEffect(() => {
+    const currentIds = new Set(messages.map((message) => message.id))
     for (const id of Array.from(messageRefs.current.keys())) {
-      if (!knownIds.has(id)) {
+      if (!currentIds.has(id)) {
         messageRefs.current.delete(id)
         refCallbacksRef.current.delete(id)
       }
@@ -253,8 +251,9 @@ export const MessageList = memo(function MessageList({
   }, [messages])
 
   // Prune animation set to only IDs still in the current message list,
-  // preventing unbounded growth when messages are paged out.
-  const knownIds = new Set(messages.map((message) => message.id))
+  // preventing unbounded growth when messages are paged out. Stateful
+  // pruning happens during render; a plain ref cleanup would need a
+  // setState, which the hooks compiler rejects in effect bodies.
   const pruned = new Set(
     Array.from(animatedMessages).filter((id) => knownIds.has(id)),
   )
@@ -262,17 +261,6 @@ export const MessageList = memo(function MessageList({
     setAnimatedMessages(pruned)
   }
 
-  // visible history rather than growing unbounded. Stateful pruning for the
-  // animation set happens above during render; a plain ref cleanup below
-  // would need a setState, which the hooks compiler rejects in effect bodies.
-  useEffect(() => {
-    for (const id of Array.from(messageRefs.current.keys())) {
-      if (!knownIds.has(id)) {
-        messageRefs.current.delete(id)
-        refCallbacksRef.current.delete(id)
-      }
-    }
-  }, [messages])
   const getMessageRef = useCallback((id: string) => {
     let callback = refCallbacksRef.current.get(id)
     if (!callback) {

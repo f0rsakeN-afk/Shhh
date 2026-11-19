@@ -22,7 +22,7 @@ import { PresenceIndicator } from "@/components/presence-indicator"
 import { ConnectionNotification } from "@/components/connection-notification"
 import { JoinRoomScreen } from "@/components/join-room-screen"
 import { Spinner } from "@/components/ui/spinner"
-import { toastError, toastSuccess } from "@/lib/toast"
+import { toastError } from "@/lib/toast"
 import { ApiError, requireOk, isSessionStale, isThrottled, networkErrorCopy } from "@/lib/api-error"
 import { notifyIfHidden } from "@/lib/notify"
 import {
@@ -72,7 +72,6 @@ const Page = () => {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | undefined>(undefined)
   const typingDebounceRef = useRef<NodeJS.Timeout | undefined>(undefined)
-  const autoCopiedRef = useRef(false)
   // Batched read receipts: ids observed since the last flush, sent together
   // on a trailing timer. Declared with the other refs so every hook below
   // sees a stable handle.
@@ -131,6 +130,17 @@ const Page = () => {
     setHasJoined(false)
   }, [roomId, queryClient])
 
+  // A 401 from an identity-bearing mutation means the server has no joined
+  // user for this token. Returning to the join screen is the only recovery
+  // that works — a plain refresh would restore the same stale session.
+  const recoverStaleSession = useCallback(() => {
+    cleanupRoom()
+    toastError({
+      title: "Session expired",
+      description: "Pick your name to rejoin the room.",
+    })
+  }, [cleanupRoom])
+
   // Recent tail of the transcript; older pages are user-fetched and kept in
   // local state so prepend-anchor scrolling never re-triggers a query.
   const {
@@ -139,6 +149,9 @@ const Page = () => {
     refetch: refetchMessages,
   } = useQuery({
     queryKey: ["messages", roomId],
+    // History is only meaningful once the server has registered this token
+    // as a participant; fetching before the join just invites a 401.
+    enabled: hasJoined,
     queryFn: async () => {
       const res = await client.messages.get({ query: { roomId, limit: 100 } })
 
@@ -256,19 +269,17 @@ const Page = () => {
         return
       }
       // Surface the undelivered text so nothing feels silently swallowed.
+      if (isSessionStale(err)) {
+        recoverStaleSession()
+        return
+      }
       toastError({
-        title: isSessionStale(err)
-          ? "Session expired"
-          : isThrottled(err)
-            ? "Sending too fast"
-            : "Message failed to send",
-        description: isSessionStale(err)
-          ? "Refresh the page to rejoin and send again."
-          : isThrottled(err)
-            ? "Give it a couple of seconds, then resend."
-            : variables.text.length > 80
-              ? `${variables.text.slice(0, 80)}…`
-              : variables.text,
+        title: isThrottled(err) ? "Sending too fast" : "Message failed to send",
+        description: isThrottled(err)
+          ? "Give it a couple of seconds, then resend."
+          : variables.text.length > 80
+            ? `${variables.text.slice(0, 80)}…`
+            : variables.text,
       })
     },
     onSettled: () => {
@@ -290,10 +301,7 @@ const Page = () => {
         return
       }
       if (isSessionStale(err)) {
-        toastError({
-          title: "Session expired",
-          description: "Refresh the page to rejoin, then try again.",
-        })
+        recoverStaleSession()
         return
       }
       if (err instanceof ApiError && err.status === 403) {
@@ -339,17 +347,26 @@ const Page = () => {
         toastError(network)
         return
       }
+      if (isSessionStale(err)) {
+        recoverStaleSession()
+        return
+      }
       toastError({
-        title: isSessionStale(err) ? "Session expired" : "Could not destroy the room",
-        description: isSessionStale(err)
-          ? "Refresh the page to rejoin, then try again."
-          : undefined,
+        title: "Could not destroy the room",
       })
     },
   })
 
   const { mutate: joinRoom, isPending: isJoining } = useMutation({
-    mutationFn: async ({ username: name, avatar }: { username: string; avatar: number }) => {
+    mutationFn: async ({
+      username: name,
+      avatar,
+    }: {
+      username: string
+      avatar: number
+      /** Resuming an existing session: failures fall back to the join screen. */
+      silent?: boolean
+    }) => {
       const res = await client.room.join.post({ username: name, avatar }, { query: { roomId } })
       return requireOk<{ success: boolean }>(res, "Could not enter the room")
     },
@@ -358,12 +375,15 @@ const Page = () => {
       setJoinedAvatar(avatar)
       setHasJoined(true)
     },
-    onError: (err) => {
+    onError: (err, variables) => {
       const network = networkErrorCopy(err)
       if (network) {
-        toastError(network)
+        if (!variables.silent) toastError(network)
         return
       }
+      // A silent resume failure just drops back to the join screen, which is
+      // already the fallback render when `hasJoined` stays false.
+      if (variables.silent) return
       toastError({
         title: isSessionStale(err)
           ? "Your invite slot expired"
@@ -444,11 +464,13 @@ const Page = () => {
         toastError(network)
         return
       }
+      if (isSessionStale(err)) {
+        recoverStaleSession()
+        return
+      }
       toastError({
-        title: isSessionStale(err) ? "Session expired" : "Reaction failed",
-        description: isSessionStale(err)
-          ? "Refresh the page to rejoin, then try again."
-          : "Your chip stays as-is. Try again.",
+        title: "Reaction failed",
+        description: "Your chip stays as-is. Try again.",
       })
     },
   })
@@ -493,11 +515,13 @@ const Page = () => {
         toastError(network)
         return
       }
+      if (isSessionStale(err)) {
+        recoverStaleSession()
+        return
+      }
       toastError({
-        title: isSessionStale(err) ? "Session expired" : "Could not delete the message",
-        description: isSessionStale(err)
-          ? "Refresh the page to rejoin, then try again."
-          : "The message is untouched; try again.",
+        title: "Could not delete the message",
+        description: "The message is untouched; try again.",
       })
     },
     onSuccess: (_, messageId) => {
@@ -530,23 +554,41 @@ const Page = () => {
     enabled: hasJoined,
   })
 
-  // On the first mount, restore the room-specific name/avatar selection and
-  // continue the session silently when it exists.
+  // Restore the name/avatar selection on mount. A room-specific selection
+  // means this token likely belongs to an existing session, so re-run the
+  // (idempotent) join and let the server confirm it before the UI treats the
+  // user as joined. A general name from a previous room only prefills the
+  // join screen — marking it joined locally gives the user a composer for a
+  // token the server never registered, and the first send then 401s.
+  const resumedRoomRef = useRef<string | null>(null)
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    if (resumedRoomRef.current === roomId) return
+    resumedRoomRef.current = roomId
+
     const storedName = localStorage.getItem("selected_name_" + roomId)
     const storedAvatar = localStorage.getItem("selected_avatar_" + roomId)
+    const generalName = localStorage.getItem("chat_username")
+    const parsedAvatar = storedAvatar === null ? NaN : parseInt(storedAvatar, 10)
+    const hasStoredIdentity =
+      Boolean(storedName) &&
+      Number.isInteger(parsedAvatar) &&
+      parsedAvatar >= 0 &&
+      parsedAvatar <= 9
 
-    if (storedName && storedAvatar !== null) {
-      const parsedAvatar = parseInt(storedAvatar, 10)
-      if (!Number.isNaN(parsedAvatar) && parsedAvatar >= 0 && parsedAvatar <= 9) {
-        setJoinedAvatar(parsedAvatar)
-      }
+    if (storedName) {
       setJoinedUsername(storedName)
-      setHasJoined(true)
-      try { localStorage.setItem("chat_username", storedName) } catch {}
+    } else if (generalName) {
+      // Returning visitor: offer their usual name, but still show the join
+      // screen so the server registers this token for the new room.
+      setJoinedUsername(generalName)
     }
-  }, [roomId])
+
+    if (storedName && hasStoredIdentity) {
+      setJoinedAvatar(parsedAvatar)
+      joinRoom({ username: storedName, avatar: parsedAvatar, silent: true })
+    }
+  }, [roomId, joinRoom])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
@@ -570,31 +612,6 @@ const Page = () => {
       cleanupRoom()
     }
   }, [cleanupRoom])
-
-  // Copy the invite once on entry so the link is ready to paste. Browsers can
-  // reject clipboard access without a direct gesture, so this stays silent.
-  useEffect(() => {
-    if (!hasJoined || autoCopiedRef.current) return
-    autoCopiedRef.current = true
-
-    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-      return
-    }
-
-    const inviteUrl = `${window.location.origin}/room/${roomId}`
-
-    void navigator.clipboard
-      .writeText(inviteUrl)
-      .then(() => {
-        void toastSuccess({
-          title: "Invite link copied",
-          description: "Send it to the person you want in the room.",
-        })
-      })
-      .catch(() => {
-        // Clipboard access was denied. Sharing from the header still works.
-      })
-  }, [hasJoined, roomId])
 
   // Keyboard shortcuts: "/" focuses search (when not typing in a field).
   useEffect(() => {
@@ -981,7 +998,7 @@ const Page = () => {
     return (
       <JoinRoomScreen
         roomId={roomId}
-        suggestedName={username}
+        suggestedName={joinedUsername || username}
         onJoin={handleJoin}
         isJoining={isJoining}
         timeToLive={ttlData?.ttl}

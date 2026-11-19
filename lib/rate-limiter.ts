@@ -14,8 +14,6 @@ import { redis } from "@/lib/redis"
 
 // Module-scoped fallback store (populated on first rateHit call).
 const fallbackLimiter: Map<string, { count: number; resetAt: number }> = new Map()
-// Per-key in-flight guard for concurrent rateHit calls on the same key.
-const inFlight = new Set<string>()
 
 /** Hit a rate limit key; returns { blocked, resetAt, current } */
 export async function rateHit(
@@ -25,11 +23,17 @@ export async function rateHit(
 ): Promise<{ blocked: boolean; resetAt: number; current: number }> {
   const ckey = `rate:${key}`
   try {
-    const newCount = await redis.incr(ckey)
+    // INCR and TTL in one round-trip. A key created by an older version (or
+    // one whose EXPIRE was lost) can otherwise live forever with its counter
+    // past the cap, permanently blocking every caller in the fixed window.
+    const pipeline = redis.pipeline()
+    pipeline.incr(ckey)
+    pipeline.ttl(ckey)
+    const [countRaw, ttlRaw] = (await pipeline.exec()) as (number | null)[]
+    const newCount = Number(countRaw ?? 0)
 
-    // If the first hit, set the expiry so the key auto-expires.
-    if (newCount === 1) {
-      await redis.expire(ckey, windowSecs)
+    if ((ttlRaw ?? -1) <= 0) {
+      await redis.expire(ckey, Math.max(1, windowSecs))
     }
 
     const blocked = newCount > maxHits
@@ -37,27 +41,17 @@ export async function rateHit(
   } catch {
     // Fallback: in-process Map (not distributed; OK for single-instance dev).
     const now = Date.now()
-    // Guard against concurrent rateHit calls for the same key.
-    if (inFlight.has(key)) {
-      // Wait for in-progress hit to complete.
-      while (inFlight.has(key)) {
-        // spin-wait — this is best-effort fallback only
-      }
-    }
-    inFlight.add(key)
-
-    const entry = fallbackLimiter.get(key) ?? { count: 0, resetAt: now + windowSecs }
+    const windowMs = Math.max(1, windowSecs) * 1000
+    const entry = fallbackLimiter.get(key) ?? { count: 0, resetAt: now + windowMs }
     if (now > entry.resetAt) {
       entry.count = 1
-      entry.resetAt = now + windowSecs
+      entry.resetAt = now + windowMs
     } else {
       entry.count += 1
     }
     fallbackLimiter.set(key, entry)
     const blocked = entry.count > maxHits
     return { blocked, resetAt: entry.resetAt, current: entry.count }
-  } finally {
-    inFlight.delete(key)
   }
 }
 

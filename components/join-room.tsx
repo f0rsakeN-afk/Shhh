@@ -256,7 +256,7 @@ function JoinRoomDialog({
               <div className="min-w-0 flex-1">
                 <p className="text-xs text-muted-foreground">You&apos;ll join as</p>
                 <p className="truncate text-sm font-medium">
-                  {username || "Generating your name…"}
+                  {username || "Pick a name once you're in"}
                 </p>
               </div>
             </div>

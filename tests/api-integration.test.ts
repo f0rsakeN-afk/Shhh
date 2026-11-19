@@ -16,6 +16,13 @@ import type { Message } from "@/lib/schemas"
 
 const BASE = "http://test.local/api"
 const ROOM_TEST_TTL_SECONDS = 3600
+/**
+ * The create endpoint is rate limited per IP with a fixed window, and the
+ * limiter lives in Redis (shared across test runs). A unique forwarded IP
+ * per run keeps the suite deterministic instead of inheriting counters from
+ * an immediately preceding run.
+ */
+const TEST_CREATE_IP = `test-${nanoid()}`
 
 // The suite values a real Redis instance; on a CI machine without
 // credentials the integration file skips instead of failing the job gate.
@@ -410,7 +417,10 @@ integration("room lifetime", () => {
       const res = await POST(
         new Request(`${BASE}/room/create`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            "x-forwarded-for": TEST_CREATE_IP,
+          },
           body: JSON.stringify({ duration: token }),
         }),
       )
@@ -429,7 +439,10 @@ integration("room lifetime", () => {
     const res = await POST(
       new Request(`${BASE}/room/create`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": TEST_CREATE_IP,
+        },
         body: JSON.stringify({ duration: "3h" }),
       }),
     )

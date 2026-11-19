@@ -1,33 +1,19 @@
-import { nanoid } from "nanoid"
-import { useEffect, useState } from "react"
+import { useSyncExternalStore } from "react"
 
-const FRUITS = ["banana", "orange", "mango", "apple", "grapes"]
 const STORAGE_KEY = "chat_username"
+/** No cross-tab sync needed: the value only changes when this tab joins. */
+const subscribe = () => () => {}
 
-const generateUsername = () => {
-  const word = FRUITS[Math.floor(Math.random() * FRUITS.length)]
-  return `anonymous-${word}-${nanoid(5)}`
-}
+const getSnapshot = () =>
+  (localStorage.getItem(STORAGE_KEY) ?? "").normalize("NFKC")
 
+/** SSR/hydration snapshot: localStorage is not available on the server. */
+const getServerSnapshot = () => ""
+
+// Restores the remembered name, or an empty string when there is none. The
+// room page prompts via JoinRoomScreen in the empty case; this hook never
+// invents an identity the user did not choose.
 export const useUsername = () => {
-  const [username, setUsername] = useState("")
-
-  useEffect(() => {
-    const main = () => {
-      const stored = (localStorage.getItem(STORAGE_KEY) ?? "").normalize("NFKC")
-
-      if (stored) {
-        setUsername(stored)
-        return
-      }
-
-      const generated = generateUsername()
-      localStorage.setItem(STORAGE_KEY, generated.normalize("NFKC"))
-      setUsername(generated)
-    }
-
-    main()
-  }, [])
-
+  const username = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
   return { username }
 }

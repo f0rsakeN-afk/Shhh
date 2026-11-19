@@ -142,7 +142,9 @@ const rooms = new Elysia({ prefix: "/room" })
     async ({ body, request, set }) => {
       rate.init()
 
-      const CREATE_WINDOW_MS = 60_000
+      // rate.hit expects a window in SECONDS. The key namespace is added by
+      // the limiter itself (`rate:${key}`), so keys stay `rate:ip:...`.
+      const CREATE_WINDOW_SECS = 60
       const CREATE_PER_IP_MAX = 5
       const CREATE_GLOBAL_MAX = 120
 
@@ -153,8 +155,8 @@ const rooms = new Elysia({ prefix: "/room" })
       }
 
       const { blocked: ipBlocked } = await rate.hit(
-        `rate:ip:${getIp(request)}`,
-        CREATE_WINDOW_MS,
+        `ip:${getIp(request)}`,
+        CREATE_WINDOW_SECS,
         CREATE_PER_IP_MAX,
       )
 
@@ -164,8 +166,8 @@ const rooms = new Elysia({ prefix: "/room" })
       }
 
       const { blocked: globalBlocked } = await rate.hit(
-        "rate:global",
-        CREATE_WINDOW_MS,
+        "global",
+        CREATE_WINDOW_SECS,
         CREATE_GLOBAL_MAX,
       )
 
@@ -274,7 +276,7 @@ const rooms = new Elysia({ prefix: "/room" })
       // by relying on legacy storage.
       const decision = await redis.eval<unknown[], number>(
         `local exists = redis.call('HEXISTS', KEYS[1], ARGV[1])
-if exists == 1 then return 1 end
+if exists == 1 then return 2 end
 if tonumber(redis.call('HLEN', KEYS[1])) >= tonumber(ARGV[2]) then return 0 end
 local target = string.lower(ARGV[3])
 local vals = redis.call('HVALS', KEYS[1])
@@ -304,18 +306,23 @@ return 1`,
       }
 
       const remaining = await redis.ttl(`meta:${roomId}`)
+      // A token that already holds an identity is resuming (page refresh);
+      // only first-time joins should notify the room.
+      const isRejoin = decision === 2
 
-      log.info("User joined", { roomId, username })
+      log.info("User joined", { roomId, username, rejoin: isRejoin })
 
       await Promise.all([
         redis.zrem(pendingKeyFor(roomId), token),
         remaining > 0 ? redis.expire(`users:${roomId}`, remaining) : Promise.resolve(),
-        realtime.channel(roomId).emit("chat.connection", {
-          username,
-          action: "joined",
-          timestamp: Date.now(),
-          avatar,
-        }),
+        isRejoin
+          ? Promise.resolve()
+          : realtime.channel(roomId).emit("chat.connection", {
+              username,
+              action: "joined",
+              timestamp: Date.now(),
+              avatar,
+            }),
       ])
 
       return { success: true }
@@ -678,6 +685,7 @@ for i = 3, #ARGV do
         mutated = mutated + 1
       end
     end
+  end
 end
 if mutated > 0 then
   local remaining = redis.call('TTL', msgKey)
